@@ -1,0 +1,65 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-case-conflict
+      - id: check-shebang-scripts-are-executable
+      - id: check-symlinks
+      - id: detect-private-key
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+
+  - repo: https://github.com/google/yamlfmt
+    rev: v0.13.0
+    hooks:
+      - id: yamlfmt
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+      - id: ruff-format
+
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0-2
+    hooks:
+      - id: shfmt
+        args: ["-i", "2", "-ci", "-sr"]
+
+  - repo: https://github.com/jackdewinter/pymarkdown
+    rev: v0.9.28
+    hooks:
+      - id: pymarkdown
+        exclude: ^WORKLOG\.md$
+
+  - repo: local
+    hooks:
+      - id: verify-versions-pin
+        name: verify-versions-pin
+        entry: scripts/verify-versions-pin.sh
+        language: script
+        files: ^(VERSIONS|compose\.yaml|\.env.*)$
+        pass_filenames: false
+      - id: check-image-pins
+        name: check-image-pins
+        entry: scripts/check-image-pins.sh
+        language: script
+        files: ^compose\.yaml$
+        pass_filenames: false

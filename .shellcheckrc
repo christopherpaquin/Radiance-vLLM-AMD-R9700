@@ -1,0 +1,5 @@
+# Matches the convention used across sibling repos on this host.
+disable=SC1090  # dynamic `source` paths (profile env files sourced by variable)
+disable=SC1091  # dynamic `source` paths (common.sh sourced via $BASH_SOURCE)
+disable=SC2016  # intentional literal $ in single-quoted compose command strings
+disable=SC2031  # bats subshell false positive

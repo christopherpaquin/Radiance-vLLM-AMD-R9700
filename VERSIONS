@@ -1,0 +1,47 @@
+# Pinned version reference for this deployment. compose.yaml's image: line
+# and .env's VLLM_IMAGE must always agree with this file --
+# scripts/verify-versions-pin.sh (a pre-commit hook) enforces it. Resolved
+# empirically on scar.lab; re-verify before trusting if this file is more
+# than a few weeks old -- this ecosystem moves fast (see
+# plan-radiance-vllm.md §5).
+
+# --- Primary image (vllm-radiance / libr4d) ---------------------------------
+# Resolved 2026-09-14. magiccodingman's fork chosen over the canonical
+# stilldeadcode/vllm-radiance repo (stale at resolution time, ~3 weeks
+# since last push) -- see plan §4.1/§5 and .env-template's comment.
+VLLM_IMAGE_REPO=magiccodingman/vllm-radiance
+VLLM_IMAGE_TAG=1.0.16
+VLLM_IMAGE_DIGEST=sha256:83a9dc02a8f8e75aabe81366d36ebaa2e35fcbe181cacf8e8e0a4cef4ebccbcc
+VLLM_IMAGE_REF="${VLLM_IMAGE_REPO}@${VLLM_IMAGE_DIGEST}"
+
+# Resolved in-container package versions (verified via pip show / version
+# files inside the pulled image, 2026-09-14) -- informational, not
+# independently pinned (they're baked into the image digest above; if the
+# digest changes, re-verify these).
+#   radiance:      0.9.3-dev.vllm0.28.0-r4d0.5.0-mxfp4.rx4.dflash2.xgrammar.openobj.kvoffload.restore2
+#   vllm:           0.28.0
+#   torch:          2.12.0+rocm7.14
+#   torchvision:    0.27.1+df56172
+#   triton:         3.7.1+gitf0b55c07
+#   aiter:          0.1.20
+#   transformers:   5.15.0
+#   amdsmi:         26.5.0+2b22ab01
+#   hip:            7.14.60850
+#   rocm (in-ctr):  7.14.0  (at /opt/rocm/core-7.14/.info/version -- NOT
+#                    matched by a naive /opt/rocm*/.info/version glob,
+#                    /opt/rocm is a symlink tree)
+#   libr4d:         0.5.0
+#   python:         3.12.3
+
+# --- Last-resort fallback image ---------------------------------------------
+# Only used if vllm-radiance fails to run at all on this host (plan §4.1) --
+# an official AMD image, already validated once on this host via the
+# abandoned Containerized-VLLM-AMD-R9700 deployment.
+VLLM_FALLBACK_IMAGE_REF=rocm/vllm:rocm7.14.1_rdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0
+
+# --- Model checkpoints (see config/models/*.env for full rationale) --------
+# Primary target -- pending Phase 0/1 bake-off confirmation on this GPU.
+QWEN38_27B_MODEL_ID=RedHatAI/Qwen3.8-27B-INT4
+# Phase 0 smoke-test only (not deployed) -- upstream's own stated tuning
+# target for this entire image.
+QWEN38_27B_FP8_MODEL_ID=Qwen/Qwen3.8-27B-FP8

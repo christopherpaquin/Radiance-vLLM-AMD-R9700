@@ -1,0 +1,107 @@
+# Radiance vLLM (vllm-radiance / libr4d) OpenAI-compatible inference server
+# for AMD ROCm (Radeon AI PRO R9700 / gfx1201).
+#
+# All host-specific and model-specific configuration comes from .env and
+# config/models/*.env -- this file should not need editing to switch models,
+# change ports, or adjust GPU memory limits. See README.md, docs/, and
+# plan-radiance-vllm.md §10.
+#
+# Usage: scripts/deploy.sh <model-profile>   (sets MODEL_PROFILE, then runs this)
+
+services:
+  radiance-vllm:
+    image: ${VLLM_IMAGE}
+    container_name: ${CONTAINER_NAME:-radiance-vllm}
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+    # GPU access. Only the two device nodes ROCm needs -- no privileged
+    # mode, no other host devices, no Docker socket (unlike the dashboard).
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "${VIDEO_GID:-video}"
+      - "${RENDER_GID:-render}"
+    security_opt:
+      - seccomp=unconfined # required by ROCm; see docs/ROCM.md
+
+    # ipc: host is AMD's documented recommendation for vLLM on ROCm
+    # (API<->EngineCore worker IPC), makes an explicit shm_size unnecessary.
+    ipc: host
+
+    # Hard cap on host RAM. A prior vLLM deployment on this exact host hit
+    # a real kernel-OOM lockup from unconstrained growth here -- see .env
+    # for the values and why. Required, not optional (plan §7.4/§10.3).
+    mem_limit: ${MEM_LIMIT:-32g}
+    mem_reservation: ${MEM_RESERVATION:-26g}
+
+    env_file:
+      - .env
+      - config/models/${MODEL_PROFILE}.env
+
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH:-gfx1201}
+      - VLLM_ROCM_USE_AITER=${VLLM_ROCM_USE_AITER:-1}
+      - VLLM_ROCM_USE_AITER_RMSNORM=${VLLM_ROCM_USE_AITER_RMSNORM:-0}
+      - FLASH_ATTENTION_TRITON_AMD_ENABLE=${FLASH_ATTENTION_TRITON_AMD_ENABLE:-TRUE}
+      - ROCBLAS_USE_HIPBLASLT=${ROCBLAS_USE_HIPBLASLT:-1}
+      - TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL:-1}
+      - HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
+
+    volumes:
+      - ${HF_CACHE_DIR}:/root/.cache/huggingface
+      # Persists torch.compile / CUDA-HIP graph capture cache across
+      # restarts -- without this, every restart repeats a multi-minute
+      # recompile (observed ~13min cold-load for a 14B model on this host;
+      # expect more for 27B).
+      - ${VLLM_CACHE_DIR}:/root/.cache/vllm
+
+    ports:
+      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8081}:8000"
+
+    # This image's own ENTRYPOINT (/opt/radiance_entrypoint.sh) wraps the
+    # `vllm` CLI directly (runs a startup banner + bandwidth-test, then
+    # `exec vllm "$@"`) -- it does NOT expect a shell command as its
+    # argument. Overriding entrypoint to empty lets our own `sh -c '...'`
+    # below run as the actual container process, bypassing the banner/
+    # bandwidth-test (confirmed non-essential -- GPU access works fine
+    # without it, verified via `--entrypoint pip` during image inspection).
+    entrypoint: []
+
+    # NOTE: every $ below is doubled ($$) so Compose passes it through
+    # literally instead of interpolating it at parse time -- these
+    # variables (MODEL_ID, QUANTIZATION, ...) only exist inside the
+    # container, via the profile's env_file. NOTE: each line ends in \ and
+    # that backslash must be the last character on the line -- a bare
+    # newline inside sh -c ends the statement early and `exec` replaces the
+    # process before the rest of the flags are parsed, silently starting
+    # vLLM with only the model argument and every default instead of this
+    # profile's flags. This exact failure mode was verified live on this
+    # host with the abandoned vLLM deployment's compose file -- do not
+    # remove the backslashes for readability.
+    command: >
+      sh -c '
+        exec vllm serve "$$MODEL_ID" \
+          --served-model-name "$$SERVED_MODEL_NAME" \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --max-model-len "$$MAX_MODEL_LEN" \
+          --gpu-memory-utilization "$$GPU_MEMORY_UTILIZATION" \
+          $${QUANTIZATION:+--quantization "$$QUANTIZATION"} \
+          $${KV_CACHE_DTYPE:+--kv-cache-dtype "$$KV_CACHE_DTYPE"} \
+          $${TOOL_CALL_PARSER:+--enable-auto-tool-choice --tool-call-parser "$$TOOL_CALL_PARSER"} \
+          $${REASONING_PARSER:+--reasoning-parser "$$REASONING_PARSER"} \
+          $${SPEC_DECODE_ARGS} \
+          --enable-prefix-caching \
+          $$EXTRA_VLLM_ARGS
+      '
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # 27B cold-load is slower than the 14B's measured ~13min on this
+      # host; widen further if observed to need it (docs/TUNING.md).
+      start_period: 1800s
