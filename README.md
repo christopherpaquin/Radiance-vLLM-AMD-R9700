@@ -1,9 +1,25 @@
 # Radiance vLLM on AMD Radeon AI PRO R9700 (scar.lab)
 
-Installer/automation for migrating scar.lab's LLM inference stack from
-llama.cpp to a vLLM deployment on the "Radiance" stack
-(`vllm-radiance`/`libr4d`, a community project -- see below) running on the
-host's single AMD Radeon AI PRO R9700 (32GB, gfx1201/RDNA4).
+Production deployment and automation for running a vLLM-compatible inference
+service on `scar.lab` using the community Radiance stack
+(`vllm-radiance`/`libr4d`) and one AMD Radeon AI PRO R9700 (32 GiB,
+gfx1201/RDNA4). This repository replaced the host's previous llama.cpp service
+while preserving a tested rollback path.
+
+## Current deployment
+
+| Component | Current value |
+|---|---|
+| API | `http://scar.lab:8080/v1` |
+| Dashboard | `http://scar.lab:8088/` |
+| Model | `RedHatAI/Qwen3.8-27B-INT4`, served as `scar-coder` |
+| Runtime | Radiance-patched vLLM 0.28.0 on ROCm |
+| Context | 131,072 configured tokens; 262,144 native model context |
+| KV cache | FP8, approximately 358,958-token capacity |
+| Container | `radiance-vllm` |
+
+The deployment is operational and cut over to production. See `STATUS.md` for
+the current state and `WORKLOG.md` for the implementation record.
 
 **Read `plan-radiance-vllm.md` and `plan-radiance-observability.md` first.**
 They contain the full design rationale, verified research, and explicit
@@ -13,14 +29,39 @@ quick-reference, not a substitute for those documents.
 ## Important framing
 
 "Radiance vLLM" is not an AMD-official product. It's a single-maintainer
-community project (`vllm-radiance`, originally by StillDeadcode, this
-deployment uses an actively-maintained fork by `magiccodingman`) that ships
-a patched vLLM plus a custom RDNA4 kernel library (`libr4d`, providing the
-"R4D" attention backend and "DFlash2" speculative decoding). Its primary
-qualified environment is 2xR9700 (TP=2) -- single-GPU (this deployment) is
-explicitly the least-tested configuration in this ecosystem. See
-`plan-radiance-vllm.md` §4 for the full risk framing and why this project
-was chosen anyway (explicit user decision, recorded in §4.1/§25).
+community project originally maintained by StillDeadcode. This deployment uses
+the actively maintained `magiccodingman` fork, which packages patched vLLM with
+the `libr4d` RDNA4 kernel library. Radiance provides R4D attention/GDN kernels
+and experimental speculative-decoding paths.
+
+The upstream project's primary qualified environment is two R9700 GPUs with
+tensor parallelism. This repository's single-GPU, INT4, 131K-context deployment
+is outside that primary qualification profile and was therefore validated on
+the target host before cutover. See `plan-radiance-vllm.md` §4 for the complete
+risk analysis and decision record.
+
+### Upstream projects
+
+- [magiccodingman/vllm-radiance](https://github.com/magiccodingman/vllm-radiance)
+  -- source repository for the fork used by this deployment.
+- [magiccodingman/vllm-radiance on Docker Hub](https://hub.docker.com/r/magiccodingman/vllm-radiance)
+  -- source of the digest-pinned production image.
+- [StillDeadcode/vllm-radiance](https://codeberg.org/StillDeadcode/vllm-radiance)
+  -- original upstream project.
+- [vLLM](https://github.com/vllm-project/vllm) -- inference engine on which
+  Radiance is based.
+
+The exact production image digest is recorded in `VERSIONS`; floating image
+tags are not used for deployment.
+
+## Requirements
+
+- Linux host with a ROCm-supported AMD Radeon AI PRO R9700 (`gfx1201`)
+- Docker Engine with the Compose plugin
+- ROCm device nodes `/dev/kfd` and `/dev/dri`
+- `curl`, `jq`, and `bc` for validation and benchmark scripts
+- Sufficient storage for Hugging Face model and compilation caches under
+  `/var/lib/radiance-vllm`
 
 ## Quick start
 
@@ -30,6 +71,7 @@ cp .env-template .env       # review it -- HUGGING_FACE_HUB_TOKEN, etc.
 scripts/deploy.sh qwen38-27b # deploy the primary profile
 scripts/status.sh            # check health
 scripts/test-tool-calling.sh qwen38-27b
+scripts/benchmark.sh qwen38-27b
 scripts/logs.sh
 ```
 
@@ -37,10 +79,13 @@ scripts/logs.sh
 
 | Profile | Purpose |
 |---|---|
-| `qwen38-27b` | Primary target -- see `config/models/qwen38-27b.env` for the full quant/context/spec-decode decision tree |
-| `qwen38-27b-smoketest` | Phase 0 architecture validation only -- not a real deployment profile |
-| `qwen25-coder-14b` | Proven-working fallback (ported from the abandoned vLLM deployment) |
-| `qwen3-coder-30b-a3b` | Proven-working fallback (ported from the abandoned vLLM deployment) |
+| `qwen38-27b` | Primary production profile |
+| `qwen38-27b-smoketest` | Architecture validation only |
+| `qwen25-coder-14b` | Proven fallback profile |
+| `qwen3-coder-30b-a3b` | Proven fallback profile |
+
+The profile files under `config/models/` document their quantization, context,
+and speculative-decoding decisions.
 
 ## Rollback
 
@@ -55,24 +100,33 @@ See `plan-radiance-vllm.md` §19 for the full procedure and what it does
 NOT require (no reinstall, no config restore -- llama.cpp's own state was
 never touched).
 
+## Benchmark snapshot
+
+The production concurrency and prompt-size matrix completed 36 of 36 requests
+without OOMs or preemptions. Single-request decoding measured approximately
+23-24 tokens/s; aggregate generation reached approximately 74 tokens/s at
+concurrency 4 and 97 tokens/s at concurrency 8. See `docs/TUNING.md` and the
+curated files in `benchmarks/results/` for the complete results and limitations.
+
 ## Scripts
 
 - `install.sh` / `uninstall.sh` -- system directory setup / teardown
 - `scripts/preflight.sh [--cutover]` -- read-only host readiness checks
 - `scripts/deploy.sh <profile>` -- deploy + validate a model profile
 - `scripts/start.sh` / `stop.sh` / `status.sh` / `logs.sh` -- lifecycle
-- `scripts/validate-model.sh <profile>` -- guardrail checks (VRAM, known-answer, tool-call determinism)
-- `scripts/test-tool-calling.sh <profile>` -- 6-scenario tool-calling validation matrix
-- `scripts/cutover.sh <profile>` -- takes over port 8080 from llama.cpp (production-impacting; automatic rollback on failure)
+- `scripts/validate-model.sh <profile>` -- VRAM and correctness guardrails
+- `scripts/test-tool-calling.sh <profile>` -- tool-calling validation matrix
+- `scripts/benchmark.sh <profile>` -- repeatable TTFT/throughput measurement
+- `scripts/cutover.sh <profile>` -- production cutover with automatic rollback
 - `scripts/rollback.sh` -- manual rollback to llama.cpp
-- `scripts/configure-opencode.sh` / `configure-pi.sh` -- downstream client configuration (run on raptor.lab)
-- `scripts/restore-or-shutdown.sh` -- shared failure-recovery logic (ported from the llama.cpp repo)
+- `scripts/configure-opencode.sh` / `configure-pi.sh` -- client configuration
+- `scripts/restore-or-shutdown.sh` -- shared failure-recovery logic
 
 ## Docs
 
-- `docs/ROCM.md` -- gfx1201/vllm-radiance-specific notes, image gotchas, R4D/DFlash2 findings
+- `docs/ROCM.md` -- gfx1201/Radiance notes and R4D/DFlash2 findings
 - `docs/MODELS.md` -- quantization bake-off results, Phase 0 smoke-test outcome
-- `docs/TUNING.md` -- GPU memory utilization sweep, KV cache sizing (filled in as Phase 1-3 run)
+- `docs/TUNING.md` -- GPU memory, KV-cache sizing, and production benchmarks
 - `docs/runbook.md` -- operational procedures (rollback, known-issue workarounds)
 
 ## Conventions
