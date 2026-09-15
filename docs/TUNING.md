@@ -121,3 +121,34 @@ on this single 32GB GPU (see the VRAM-contention note in
 `docs/runbook.md`) without an extra stop/benchmark/redeploy cycle not
 performed in this session. Flagged as a follow-up, not a blocker --
 TTFT and correctness are already strong signals on their own.
+
+### Production concurrency and prompt-size matrix (2026-09-14)
+
+After cutover, the full matrix specified by the inherited benchmark methodology
+was run against production port 8080 with a fixed 256-token output cap. All 36
+measured requests completed successfully. Prompt tokens below are the API's
+actual token counts, not the script's approximate requested sizes.
+
+| Concurrency | Prompt tokens | TTFT | Mean latency | Aggregate decode tok/s |
+|---:|---:|---:|---:|---:|
+| 1 | 509 | 0.0051s | 10.5682s | 24.18 |
+| 1 | 3,653 | 0.0109s | 10.6250s | 24.05 |
+| 1 | 7,277 | 0.0187s | 10.9131s | 23.41 |
+| 4 | 509 | 0.0119s | 13.8006s | 74.04 |
+| 4 | 3,653 | 0.0269s | 13.7961s | 74.05 |
+| 4 | 7,277 | 0.0454s | 14.9688s | 68.12 |
+| 8 | 509 | 0.0153s | 20.9821s | 97.33 |
+| 8 | 3,653 | 0.0415s | 21.1289s | 96.64 |
+| 8 | 7,277 | 0.0829s | 23.5006s | 86.68 |
+
+The single-request results remain in the same ~23-24 tok/s band as the earlier
+staging measurements. Continuous batching scales aggregate generation to about
+74 tok/s at concurrency 4 and 97 tok/s at concurrency 8 for the short and
+medium prompts. The longest prompt reduces aggregate throughput by about 8%
+at concurrency 4 and 11% at concurrency 8, while remaining stable. VRAM usage
+was 31,755-32,009 MiB during the matrix. The server and dashboard health and
+metrics endpoints remained healthy after the run, with no failed requests,
+OOMs, or preemptions observed.
+
+Raw per-point JSON and the CSV index are under `benchmarks/results/` on this
+host (ignored by Git unless deliberately curated).
