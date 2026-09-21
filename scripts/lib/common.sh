@@ -22,7 +22,51 @@ resolve_profile_alias() {
     qwen38 | qwen3.8 | qwen3.8-27b) echo "qwen38-27b" ;;
     qwen25-coder | qwen2.5-coder) echo "qwen25-coder-14b" ;;
     qwen3-coder) echo "qwen3-coder-30b-a3b" ;;
+    radlight | qwen38-radlight) echo "qwen38-27b-radlight" ;;
+    radlight-balanced) echo "qwen38-27b-radlight-balanced" ;;
+    radlight-compat) echo "qwen38-27b-radlight-compat" ;;
+    radlight-nospec) echo "qwen38-27b-radlight-nospec" ;;
+    radlight-template) echo "qwen38-27b-radlight-template" ;;
     *) echo "$1" ;;
+  esac
+}
+
+# --- stack flavor (radiance-baseline vs radlight) ----------------------------
+#
+# Two independently-pinned stacks (VERSIONS, docs/RADLIGHT-TUNABLES.md).
+# Rather than requiring every caller to pass a separate --stack flag (an
+# easy way to accidentally run a radlight profile through compose.yaml, or
+# vice versa), the stack is DERIVED from the profile name: any profile
+# whose file is config/models/*radlight*.env is the radlight stack, every
+# other profile is the radiance-baseline stack. STACK_FLAVOR in .env
+# records the currently-deployed stack for status.sh/audits, but deploy.sh
+# always derives it fresh from the profile argument rather than trusting
+# that recorded value.
+stack_for_profile() {
+  case "$1" in
+    *radlight*) echo "radlight" ;;
+    *) echo "radiance-baseline" ;;
+  esac
+}
+
+# Compose file for a stack.
+compose_file_for_stack() {
+  case "$1" in
+    radlight) echo "${REPO_ROOT}/compose.radlight.yaml" ;;
+    radiance-baseline) echo "${REPO_ROOT}/compose.yaml" ;;
+    *) log_fail "Unknown stack flavor: '$1' (expected 'radiance-baseline' or 'radlight')"; exit 1 ;;
+  esac
+}
+
+# Compose service/container name for a stack -- both stacks use this same
+# name for their service AND container_name (see compose.yaml/
+# compose.radlight.yaml), so one lookup covers both `compose ps <name>` and
+# `docker inspect <name>`.
+container_name_for_stack() {
+  case "$1" in
+    radlight) echo "radlight-vllm" ;;
+    radiance-baseline) echo "radiance-vllm" ;;
+    *) log_fail "Unknown stack flavor: '$1' (expected 'radiance-baseline' or 'radlight')"; exit 1 ;;
   esac
 }
 
@@ -104,15 +148,34 @@ resolve_model_profile() {
 # same convention as the llama.cpp repo's state/current-profile.
 STATE_DIR="/var/lib/radiance-vllm/state"
 CURRENT_PROFILE_FILE="${STATE_DIR}/current-profile"
+CURRENT_STACK_FILE="${STATE_DIR}/current-stack"
 
+# Records both the profile AND its stack flavor -- the two-level rollback
+# chain (radlight -> radiance-baseline -> llama.cpp) needs to know which
+# compose file/container name a "prior known-good" profile actually runs
+# under, not just its name.
 save_current_profile() {
   mkdir -p "$STATE_DIR"
   printf '%s\n' "$1" > "$CURRENT_PROFILE_FILE"
+  printf '%s\n' "$(stack_for_profile "$1")" > "$CURRENT_STACK_FILE"
 }
 
 # Prints the remembered profile, or empty if none.
 load_current_profile() {
   [[ -f "$CURRENT_PROFILE_FILE" ]] && cat "$CURRENT_PROFILE_FILE"
+  return 0
+}
+
+# Prints the remembered stack for the current profile, or derives it from
+# the profile name if the state file predates this field (upgrade path).
+load_current_stack() {
+  if [[ -f "$CURRENT_STACK_FILE" ]]; then
+    cat "$CURRENT_STACK_FILE"
+  else
+    local p
+    p="$(load_current_profile)"
+    [[ -n "$p" ]] && stack_for_profile "$p"
+  fi
   return 0
 }
 
@@ -132,11 +195,15 @@ compose_cmd() {
 
 # Runs docker compose in the repo root with MODEL_PROFILE and API_PORT
 # exported, so env_file: config/models/${MODEL_PROFILE}.env and the port
-# mapping resolve correctly.
+# mapping resolve correctly. Uses -f to select compose.yaml or
+# compose.radlight.yaml based on STACK_FLAVOR (set by the caller --
+# ideally via `export STACK_FLAVOR="$(stack_for_profile "$PROFILE")"` right
+# after resolving the profile, so this never has to guess).
 compose() {
-  local cmd
+  local cmd file
   cmd="$(compose_cmd)"
-  (cd "${REPO_ROOT}" && MODEL_PROFILE="${MODEL_PROFILE:-}" $cmd "$@")
+  file="$(compose_file_for_stack "${STACK_FLAVOR:-radiance-baseline}")"
+  (cd "${REPO_ROOT}" && MODEL_PROFILE="${MODEL_PROFILE:-}" $cmd -f "$file" "$@")
 }
 
 # --- GPU group GIDs -----------------------------------------------------------

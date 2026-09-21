@@ -24,6 +24,17 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   check_ref_in_file "$REPO_ROOT/.env" "$VLLM_IMAGE_DIGEST"
 fi
 
+# --- Radlight stack pins -----------------------------------------------------
+# scripts/sync-radlight.sh and sync-radlight-models.sh read their pins
+# straight from VERSIONS at runtime (no separate copy to drift) -- the only
+# literal duplicate worth checking here is .env-template/.env's own
+# RADLIGHT_BASE_IMAGE line, which a careless edit could desync from
+# VERSIONS' RADLIGHT_BASE_IMAGE_DIGEST.
+check_ref_in_file "$REPO_ROOT/.env-template" "$RADLIGHT_BASE_IMAGE_DIGEST"
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  check_ref_in_file "$REPO_ROOT/.env" "$RADLIGHT_BASE_IMAGE_DIGEST"
+fi
+
 if [[ "$fail" -eq 1 ]]; then
   echo "[verify-versions-pin] Re-check VERSIONS against .env-template/.env before committing." >&2
   exit 1

@@ -65,6 +65,9 @@ done
 PROFILE="$(resolve_profile_alias "$PROFILE")"
 PROFILE_PATH="$(resolve_model_profile "$PROFILE")"
 export MODEL_PROFILE="$PROFILE"
+STACK="$(stack_for_profile "$PROFILE")"
+export STACK_FLAVOR="$STACK"
+CONTAINER="$(container_name_for_stack "$STACK")"
 load_env
 
 url="$(api_base_url)"
@@ -77,10 +80,10 @@ model_id="$(printf '%s' "$models_json" | jq -r '.data[0].id // empty')"
 
 # --- container / environment metadata ----------------------------------------
 
-vllm_version="$(compose exec -T radiance-vllm python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null | tr -d '\r' || true)"
+vllm_version="$(compose exec -T "$CONTAINER" python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null | tr -d '\r' || true)"
 [[ -n "$vllm_version" ]] || vllm_version="unknown"
 
-rocm_version="$(compose exec -T radiance-vllm python3 -c 'import torch; print(torch.version.hip)' 2>/dev/null | tr -d '\r' || true)"
+rocm_version="$(compose exec -T "$CONTAINER" python3 -c 'import torch; print(torch.version.hip)' 2>/dev/null | tr -d '\r' || true)"
 [[ -n "$rocm_version" ]] || rocm_version="unknown"
 
 vram_used_mb="unknown"
@@ -208,6 +211,7 @@ out_file="${results_dir}/$(date -u +%Y%m%dT%H%M%SZ)_${PROFILE}_c${CONCURRENCY}_p
 jq -n \
   --arg timestamp "$timestamp" \
   --arg model_profile "$PROFILE" \
+  --arg stack "$STACK" \
   --arg served_model "$model_id" \
   --arg model_id_config "$(get_profile_var MODEL_ID)" \
   --arg vllm_version "$vllm_version" \
@@ -231,6 +235,7 @@ jq -n \
   '{
     timestamp: $timestamp,
     model_profile: $model_profile,
+    stack: $stack,
     served_model: $served_model,
     model_id: $model_id_config,
     vllm_version: $vllm_version,
@@ -256,8 +261,8 @@ jq -n \
 # Flat CSV index alongside the per-run JSON files, for quick spreadsheet use.
 csv_file="${results_dir}/results.csv"
 if [[ ! -f "$csv_file" ]]; then
-  echo "timestamp,model_profile,served_model,vllm_version,rocm_version,max_model_len,quantization,kv_cache_dtype,gpu_memory_utilization,vram_used_mb,concurrency,avg_prompt_tokens,max_tokens,avg_completion_tokens,avg_ttft_seconds,avg_latency_seconds,aggregate_tokens_per_sec" > "$csv_file"
+  echo "timestamp,model_profile,stack,served_model,vllm_version,rocm_version,max_model_len,quantization,kv_cache_dtype,gpu_memory_utilization,vram_used_mb,concurrency,avg_prompt_tokens,max_tokens,avg_completion_tokens,avg_ttft_seconds,avg_latency_seconds,aggregate_tokens_per_sec" > "$csv_file"
 fi
-echo "${timestamp},${PROFILE},${model_id},${vllm_version},${rocm_version},$(get_profile_var MAX_MODEL_LEN),$(get_profile_var QUANTIZATION),$(get_profile_var KV_CACHE_DTYPE),$(get_profile_var GPU_MEMORY_UTILIZATION),${vram_used_mb},${CONCURRENCY},${avg_prompt_tokens},${MAX_TOKENS},${avg_completion_tokens},${avg_ttft},${avg_latency},${aggregate_tokens_per_sec}" >> "$csv_file"
+echo "${timestamp},${PROFILE},${STACK},${model_id},${vllm_version},${rocm_version},$(get_profile_var MAX_MODEL_LEN),$(get_profile_var QUANTIZATION),$(get_profile_var KV_CACHE_DTYPE),$(get_profile_var GPU_MEMORY_UTILIZATION),${vram_used_mb},${CONCURRENCY},${avg_prompt_tokens},${MAX_TOKENS},${avg_completion_tokens},${avg_ttft},${avg_latency},${aggregate_tokens_per_sec}" >> "$csv_file"
 
 log_pass "Results written to ${out_file} and appended to ${csv_file}"

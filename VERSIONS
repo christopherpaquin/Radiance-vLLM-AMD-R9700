@@ -45,3 +45,60 @@ QWEN38_27B_MODEL_ID=RedHatAI/Qwen3.8-27B-INT4
 # Phase 0 smoke-test only (not deployed) -- upstream's own stated tuning
 # target for this entire image.
 QWEN38_27B_FP8_MODEL_ID=Qwen/Qwen3.8-27B-FP8
+
+# =============================================================================
+# --- Radlight stack (vllm-radlight / radiance-vllm-mxfp4 / libr4d) ----------
+# =============================================================================
+# A SEPARATE, independently-pinned stack flavor from the Radiance baseline
+# above -- do not mix Python modules, patches, or env-var assumptions between
+# the two. See docs/RADLIGHT-TUNABLES.md for the full tunable comparison and
+# plan-radiance-vllm.md for why these are treated as two complete stacks
+# rather than an upgrade of one.
+#
+# Source: https://codeberg.org/hifi/vllm-radlight -- no top-level LICENSE
+# file in this repo or either submodule (verified 2026-09-21 via directory
+# listing at the pinned commits below); see docs/RADLIGHT-TUNABLES.md
+# "Licensing" section. Not vendored into this Git repo -- acquired at a
+# fixed host path by scripts/sync-radlight.sh, never committed here.
+RADLIGHT_REPO=https://codeberg.org/hifi/vllm-radlight.git
+RADLIGHT_COMMIT=f93de10c3d47782edd9ec7a0a69afb0974c5fc63
+RADLIGHT_SUBMODULE_LIBR4D_COMMIT=b9e42ab7202f53a3bc13d415f5d41481f9ca311b
+RADLIGHT_SUBMODULE_MXFP4_COMMIT=037e7fc558038fb73fc7fee1fae504026ffc5087
+RADLIGHT_LOCAL_PATH=/var/lib/radiance-vllm/upstream/vllm-radlight
+
+# Base image Radlight patches on-the-fly at container start (no build step --
+# see entrypoint/init.sh). AMD's own vLLM 0.27/ROCm 10 build, NOT the
+# Radiance-baseline image above -- different vLLM major version, different
+# ROCm major version, incompatible patch anchors. Resolved 2026-09-21 via
+# `docker manifest inspect` (linux/amd64), immutable digest, not the floating
+# tag alone.
+RADLIGHT_BASE_IMAGE_REPO=docker.io/rocm/vllm
+RADLIGHT_BASE_IMAGE_TAG=rocm10.0.0_ubuntu24.04_py3.14_pytorch_2.12.0_vllm_0.27.0
+RADLIGHT_BASE_IMAGE_DIGEST=sha256:b8a082f346d069376d35784250e38b23a043efe979408ae3a33d7c6b62ee3276
+RADLIGHT_BASE_IMAGE_REF="${RADLIGHT_BASE_IMAGE_REPO}@${RADLIGHT_BASE_IMAGE_DIGEST}"
+
+# --- Radlight candidate model checkpoints -----------------------------------
+# Exact HF revisions resolved 2026-09-21 via the HF Hub API (commit sha, not
+# a mutable branch name). Re-resolve and update if these ever need to move.
+#
+# Target: AMD's own Quark AWQ-MXFP4 quant of the same Qwen3.8-27B checkpoint
+# already validated architecturally in the Radiance baseline above. Chosen
+# as the Radlight production candidate because Radlight supplies R9700
+# (gfx1201)-specific MXFP4/W4A8 kernels for it -- NOT promoted purely on
+# throughput; see docs/MODELS.md's existing "Avoid" note on this exact
+# quant_method (a past loader crash on an older vLLM build/older checkpoint)
+# and re-verify on this exact pinned stack rather than assuming it's fixed.
+RADLIGHT_TARGET_MODEL_ID=amd/Qwen3.8-27B-Quark-AWQ-MXFP4
+RADLIGHT_TARGET_MODEL_REVISION=5233554c5fa56afda40150556b95573c2d7d29c0
+# Tokenizer + chat template ship inside the target repo above at the same
+# revision -- no separate tokenizer repo/revision needed.
+
+# Speculative drafter (DFlash2). Small dedicated draft model, not the base
+# model's own weights.
+RADLIGHT_DRAFTER_MODEL_ID=tcclaviger/Qwen3.8-27B-DFlash2-FP8
+RADLIGHT_DRAFTER_MODEL_REVISION=ee0cb26a8279b7910cc28d82a8a3e15e4728d56f
+
+# Reference only, not deployed: Qwen's own un-quantized release, used only to
+# cross-check tokenizer/chat-template behavior if ever needed.
+RADLIGHT_REFERENCE_MODEL_ID=Qwen/Qwen3.8-27B
+RADLIGHT_REFERENCE_MODEL_REVISION=1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0

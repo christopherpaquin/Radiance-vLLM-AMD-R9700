@@ -77,15 +77,22 @@ scripts/logs.sh
 
 ## Model profiles
 
-| Profile | Purpose |
-|---|---|
-| `qwen38-27b` | Primary production profile |
-| `qwen38-27b-smoketest` | Architecture validation only |
-| `qwen25-coder-14b` | Proven fallback profile |
-| `qwen3-coder-30b-a3b` | Proven fallback profile |
+| Profile | Stack | Purpose |
+|---|---|---|
+| `qwen38-27b` | radiance-baseline | Primary production profile |
+| `qwen38-27b-smoketest` | radiance-baseline | Architecture validation only |
+| `qwen25-coder-14b` | radiance-baseline | Proven fallback profile |
+| `qwen3-coder-30b-a3b` | radiance-baseline | Proven fallback profile |
+| `qwen38-27b-radlight` | radlight | Exact-parity candidate |
+| `-balanced` / `-compat` | radlight | Context/concurrency fallbacks |
+| `-nospec` / `-template` | radlight | DFlash2-off / template A/B variants |
 
 The profile files under `config/models/` document their quantization, context,
-and speculative-decoding decisions.
+and speculative-decoding decisions. A profile's *name* determines its stack
+(`scripts/lib/common.sh:stack_for_profile`) -- any `*radlight*` profile runs
+through `compose.radlight.yaml`, everything else through `compose.yaml`.
+See `docs/RADLIGHT-TUNABLES.md` and `docs/runbook.md`'s "Radlight canary"
+section for the two-stack architecture and promotion/rollback procedure.
 
 ## Rollback
 
@@ -121,6 +128,14 @@ curated files in `benchmarks/results/` for the complete results and limitations.
 - `scripts/rollback.sh` -- manual rollback to llama.cpp
 - `scripts/configure-opencode.sh` / `configure-pi.sh` -- client configuration
 - `scripts/restore-or-shutdown.sh` -- shared failure-recovery logic
+- `scripts/sync-radlight.sh` / `sync-radlight-models.sh` -- pinned Radlight
+  source/model acquisition
+- `scripts/canary-radlight.sh` -- sequential canary (stops production,
+  deploys radlight on the canary port)
+- `scripts/promote-radlight.sh` -- promotes a validated radlight canary to
+  production port 8080
+- `scripts/rollback-radlight.sh` -- level-1 rollback (radlight ->
+  radiance-baseline)
 
 ## Docs
 

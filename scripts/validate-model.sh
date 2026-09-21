@@ -34,7 +34,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
 
 log() { echo "[validate-model] $*" >&2; }
 
@@ -179,7 +180,11 @@ run_validation() {
 
   local BASE_URL
   BASE_URL="http://localhost:${API_PORT:-8081}"
-  local COMPOSE=(docker compose -f "$REPO_ROOT/compose.yaml" --env-file "$REPO_ROOT/.env")
+  local stack container
+  stack="$(stack_for_profile "$profile")"
+  container="$(container_name_for_stack "$stack")"
+  export STACK_FLAVOR="$stack"
+  export MODEL_PROFILE="$profile"
 
   local models_json model_id
   models_json="$(curl -fsS --max-time 10 "$BASE_URL/v1/models" 2>&1)" || { log "cannot reach $BASE_URL/v1/models"; return 1; }
@@ -327,7 +332,7 @@ except Exception:
     done
 
     log "restarting container to test post-restart determinism..."
-    if ! "${COMPOSE[@]}" restart radiance-vllm; then
+    if ! compose restart "$container"; then
       FAILURES+=("tool-call determinism: 'docker compose restart' failed")
       return
     fi

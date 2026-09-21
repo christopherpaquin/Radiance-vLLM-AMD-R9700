@@ -9,29 +9,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 PROFILE="$(load_current_profile)"
+STACK="$(load_current_stack)"
 export MODEL_PROFILE="$PROFILE"
+export STACK_FLAVOR="${STACK:-radiance-baseline}"
 load_env
 
 echo "Model profile: ${PROFILE:-<none started via scripts/deploy.sh>}"
+echo "Stack flavor:  ${STACK:-<unknown>}"
 
 if [[ -n "$PROFILE" ]]; then
   PROFILE_PATH="${REPO_ROOT}/config/models/${PROFILE}.env"
   if [[ -f "$PROFILE_PATH" ]]; then
     get_profile_var() { grep "^${1}=" "$PROFILE_PATH" | head -1 | cut -d= -f2-; }
-    echo "  Served model name:      $(get_profile_var SERVED_MODEL_NAME)"
-    echo "  Max context length:     $(get_profile_var MAX_MODEL_LEN)"
-    echo "  GPU memory utilization: $(get_profile_var GPU_MEMORY_UTILIZATION)"
-    echo "  KV cache dtype:         $(get_profile_var KV_CACHE_DTYPE)"
-    echo "  Spec decode args:       $(get_profile_var SPEC_DECODE_ARGS)"
+    echo "  Model ID:                $(get_profile_var MODEL_ID)"
+    echo "  Served model name:       $(get_profile_var SERVED_MODEL_NAME)"
+    echo "  Max context length:      $(get_profile_var MAX_MODEL_LEN)"
+    echo "  GPU memory utilization:  $(get_profile_var GPU_MEMORY_UTILIZATION)"
+    echo "  KV cache dtype:          $(get_profile_var KV_CACHE_DTYPE)"
+    echo "  KV cache memory (bytes): $(get_profile_var KV_CACHE_MEMORY_BYTES)"
+    echo "  Max num seqs:            $(get_profile_var MAX_NUM_SEQS)"
+    echo "  Spec decode args:        $(get_profile_var SPEC_DECODE_ARGS)"
+    echo "  Chat template args:      $(get_profile_var CHAT_TEMPLATE_ARGS)"
   fi
 fi
 
 echo
-echo "Container:"
+echo "Container (${STACK:-radiance-baseline}):"
 if [[ -n "$PROFILE" ]]; then
-  compose ps radiance-vllm 2>&1 | sed 's/^/  /'
-  health="$(compose ps --format '{{.Health}}' radiance-vllm 2>/dev/null || true)"
+  CONTAINER="$(container_name_for_stack "${STACK:-radiance-baseline}")"
+  compose ps "$CONTAINER" 2>&1 | sed 's/^/  /'
+  health="$(compose ps --format '{{.Health}}' "$CONTAINER" 2>/dev/null || true)"
   echo "  Health: ${health:-unknown}"
+  image_digest="$(docker inspect "$CONTAINER" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo unknown)"
+  echo "  Image:  ${image_digest}"
 else
   echo "  (skipped -- no profile on record)"
 fi
@@ -47,14 +57,24 @@ else
 fi
 
 echo
-echo "Port 8080 (production endpoint):"
+echo "Rollback chain state (port 8080 = production):"
 if docker inspect llamacpp --format '{{.State.Status}}' >/dev/null 2>&1; then
   llamacpp_running="$(docker inspect llamacpp --format '{{.State.Running}}' 2>/dev/null)"
-  echo "  llamacpp: running=${llamacpp_running}"
+  llamacpp_restart="$(docker inspect llamacpp --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null)"
+  echo "  llamacpp (final fallback):        running=${llamacpp_running} restart=${llamacpp_restart}"
 fi
 if docker inspect radiance-vllm --format '{{.State.Status}}' >/dev/null 2>&1; then
   radiance_port="$(docker inspect radiance-vllm --format '{{range $p, $b := .NetworkSettings.Ports}}{{$p}}->{{(index $b 0).HostPort}} {{end}}' 2>/dev/null)"
-  echo "  radiance-vllm ports: ${radiance_port:-none}"
+  radiance_running="$(docker inspect radiance-vllm --format '{{.State.Running}}' 2>/dev/null)"
+  echo "  radiance-vllm (rollback target):  running=${radiance_running} ports=${radiance_port:-none}"
+fi
+if docker inspect radlight-vllm --format '{{.State.Status}}' >/dev/null 2>&1; then
+  radlight_port="$(docker inspect radlight-vllm --format '{{range $p, $b := .NetworkSettings.Ports}}{{$p}}->{{(index $b 0).HostPort}} {{end}}' 2>/dev/null)"
+  radlight_running="$(docker inspect radlight-vllm --format '{{.State.Running}}' 2>/dev/null)"
+  echo "  radlight-vllm (candidate):        running=${radlight_running} ports=${radlight_port:-none}"
+fi
+if [[ -f "${STATE_DIR}/rollback-manifest.json" ]]; then
+  echo "  Rollback manifest: ${STATE_DIR}/rollback-manifest.json (present)"
 fi
 
 echo

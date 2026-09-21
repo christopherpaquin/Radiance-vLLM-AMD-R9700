@@ -19,6 +19,8 @@ if [[ -z "$PROFILE" ]]; then
   log_warn "No remembered model profile. Trying compose stop anyway with an empty profile -- this may no-op."
 fi
 export MODEL_PROFILE="$PROFILE"
+STACK="$(load_current_stack)"
+export STACK_FLAVOR="$STACK"
 
 if [[ "${1:-}" == "--remove" ]]; then
   log_step "Stopping and removing radiance-vllm"

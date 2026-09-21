@@ -1,9 +1,44 @@
 # Migration Status
 
-Last updated: 2026-09-14, by the implementation session that executed
-`plan-radiance-vllm.md` Phases 0-4.
+Last updated: 2026-09-21, by the session integrating the Radlight stack
+(branch `feat/radlight-integration`). The 2026-09-14 entry below (Phases
+0-4 of `plan-radiance-vllm.md`) is unchanged and still accurate for the
+`radiance-baseline` stack.
 
-## Current state: LIVE IN PRODUCTION
+## Radlight integration: IN PROGRESS (not yet promoted)
+
+Production (`scar.lab:8080/v1`) is still served by the `radiance-baseline`
+stack (`radiance-vllm` container, `qwen38-27b` profile) -- **unchanged and
+untouched** by this work so far. A second, independently-pinned stack
+(`radlight`, see `VERSIONS` and `docs/RADLIGHT-TUNABLES.md`) has been added
+to the repo but has not yet run its sequential canary as of this entry.
+
+Completed so far:
+
+- Radlight source graph (top-level commit + both submodules) cloned and
+  pin-verified at `/var/lib/radiance-vllm/upstream/vllm-radlight`
+  (`scripts/sync-radlight.sh`, idempotent, re-verified on every run).
+- Base image digest resolved and pinned:
+  `docker.io/rocm/vllm@sha256:b8a082f346d069376d35784250e38b23a043efe979408ae3a33d7c6b62ee3276`.
+- Target/drafter model revisions resolved and pinned in `VERSIONS`;
+  download+verification in progress via `scripts/sync-radlight-models.sh`
+  (LFS sha256 / git-blob sha1 verified per file).
+- `compose.radlight.yaml`, five `config/models/qwen38-27b-radlight*.env`
+  profiles, and stack-aware updates to `scripts/lib/common.sh`,
+  `deploy.sh`, `status.sh`, `benchmark.sh`, `validate-model.sh`,
+  `restore-or-shutdown.sh`, `rollback.sh` added -- both `docker compose
+  config` renders validate cleanly.
+- New orchestration scripts: `canary-radlight.sh`, `promote-radlight.sh`,
+  `rollback-radlight.sh` (two-level rollback chain).
+
+Not yet done: the actual sequential canary run (requires stopping
+production for the duration -- single-GPU VRAM exclusivity, same
+constraint as the original llama.cpp migration), every correctness/
+tool-call/DFlash2-equivalence/long-context gate, benchmark comparison, and
+promotion. See `docs/runbook.md`'s "Radlight canary" section for the
+procedure and `WORKLOG.md` for the detailed narrative.
+
+## Radiance-baseline: LIVE IN PRODUCTION (2026-09-14 entry, unchanged)
 
 `scar.lab:8080/v1` is served by **Radiance vLLM** (`radiance-vllm`
 container), not llama.cpp. This is a completed cutover, not a staging

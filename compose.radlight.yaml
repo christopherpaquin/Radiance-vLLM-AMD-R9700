@@ -1,0 +1,196 @@
+# Radlight stack (https://codeberg.org/hifi/vllm-radlight) -- a SEPARATE,
+# independently-pinned stack flavor from compose.yaml's Radiance baseline.
+# AMD's own rocm/vllm 0.27/ROCm 10 image, patched on-the-fly at container
+# start by Radlight's entrypoint (no image build step -- see
+# scripts/sync-radlight.sh and docs/RADLIGHT-TUNABLES.md).
+#
+# Do NOT mix this with compose.yaml: different vLLM major version, different
+# ROCm major version, different patch anchors, different env-var surface.
+# Both cannot run at once -- one 32GiB R9700 cannot hold both models
+# resident simultaneously (see docs/runbook.md's existing note about this
+# for the baseline-vs-llama.cpp case; the same constraint applies here).
+#
+# Translated from Radlight's own run.sh (podman) to Docker Compose,
+# per plan-radlight-integration's "critical compatibility rule":
+#   - no --group-add keep-groups -> numeric video/render GIDs (like
+#     compose.yaml)
+#   - no -ti, no --rm -> restart: unless-stopped, a real long-lived service
+#   - no --security-opt label=disable (podman/SELinux-specific) ->
+#     seccomp=unconfined (Docker/ROCm equivalent already used in
+#     compose.yaml)
+#   - --cap-add=SYS_NICE retained (GPU_MAX_HW_QUEUES/interrupt tuning)
+#   - repo checkout and model weights mounted read-only; only the compiled-
+#     kernel cache directory is read-write
+#   - no Docker socket, no privileged mode
+#
+# Usage: scripts/deploy.sh --stack radlight <profile>
+# (profile is one of config/models/qwen38-27b-radlight*.env)
+
+services:
+  radlight-vllm:
+    image: ${RADLIGHT_BASE_IMAGE}
+    container_name: ${RADLIGHT_CONTAINER_NAME:-radlight-vllm}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "${VIDEO_GID:-video}"
+      - "${RENDER_GID:-render}"
+    # SYS_NICE: Radlight's run.sh requests this for its GPU queue/interrupt
+    # tuning (GPU_MAX_HW_QUEUES, HSA_ENABLE_INTERRUPT, HSA_ENABLE_MWAITX
+    # below) -- a scoped capability, not privileged mode.
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp=unconfined # required by ROCm; see docs/ROCM.md
+    ipc: host
+    mem_limit: ${RADLIGHT_MEM_LIMIT:-${MEM_LIMIT:-32g}}
+    mem_reservation: ${RADLIGHT_MEM_RESERVATION:-${MEM_RESERVATION:-26g}}
+    env_file:
+      - .env
+      - config/models/${MODEL_PROFILE}.env
+    environment:
+      # --- generic ROCm/allocator ---------------------------------------
+      - PYTORCH_CUDA_ALLOC_CONF=${RADLIGHT_PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      - HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
+      # Offline after models are downloaded -- scripts/sync-radlight-models.sh
+      # pre-populates RADLIGHT_TARGET_MODEL_DIR/RADLIGHT_DRAFTER_MODEL_DIR
+      # before this container ever starts, so there is nothing to fetch at
+      # runtime. Set to 0 only for a one-off diagnostic run against a repo
+      # id instead of a local path (not the production path).
+      - HF_HUB_OFFLINE=${RADLIGHT_HF_HUB_OFFLINE:-1}
+      # --- GPU queue / interrupt / MWAITX controls (from Radlight run.sh) --
+      - GPU_MAX_HW_QUEUES=${RADLIGHT_GPU_MAX_HW_QUEUES:-1}
+      - HSA_ENABLE_INTERRUPT=${RADLIGHT_HSA_ENABLE_INTERRUPT:-1}
+      - HSA_ENABLE_MWAITX=${RADLIGHT_HSA_ENABLE_MWAITX:-1}
+      # --- v2 model runner / AITER unified attention -----------------------
+      - VLLM_USE_V2_MODEL_RUNNER=${RADLIGHT_VLLM_USE_V2_MODEL_RUNNER:-1}
+      - VLLM_ROCM_USE_AITER=${RADLIGHT_VLLM_ROCM_USE_AITER:-1}
+      - VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION=${RADLIGHT_VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION:-1}
+      # --- explicitly disabled AITER subpaths (Radlight's own defaults --
+      # keep disabled unless testing on this exact pinned stack proves
+      # otherwise; see docs/RADLIGHT-TUNABLES.md) --------------------------
+      - VLLM_ROCM_USE_AITER_MHA=${RADLIGHT_VLLM_ROCM_USE_AITER_MHA:-0}
+      - VLLM_ROCM_USE_AITER_MLA=${RADLIGHT_VLLM_ROCM_USE_AITER_MLA:-0}
+      - VLLM_ROCM_USE_AITER_MOE=${RADLIGHT_VLLM_ROCM_USE_AITER_MOE:-0}
+      - VLLM_ROCM_USE_AITER_LINEAR=${RADLIGHT_VLLM_ROCM_USE_AITER_LINEAR:-0}
+      - VLLM_ROCM_USE_AITER_FP8BMM=${RADLIGHT_VLLM_ROCM_USE_AITER_FP8BMM:-0}
+      - VLLM_ROCM_USE_AITER_FP4BMM=${RADLIGHT_VLLM_ROCM_USE_AITER_FP4BMM:-0}
+      - VLLM_ROCM_USE_AITER_RMSNORM=${RADLIGHT_VLLM_ROCM_USE_AITER_RMSNORM:-0}
+      # --- MXFP4 / W4A8 routing, weight permutation, decode paths ---------
+      - RADIANCE_MXFP4=${RADLIGHT_RADIANCE_MXFP4:-1}
+      - RADIANCE_MXFP4_W4A8=${RADLIGHT_RADIANCE_MXFP4_W4A8:-1}
+      - RADIANCE_MXFP4_W4A8_MIN_M=${RADLIGHT_RADIANCE_MXFP4_W4A8_MIN_M:-0}
+      - RADIANCE_MXFP4_TN4_MIN_M=${RADLIGHT_RADIANCE_MXFP4_TN4_MIN_M:-2048}
+      - RADIANCE_MXFP4_DECODE_MAX_M=${RADLIGHT_RADIANCE_MXFP4_DECODE_MAX_M:-64}
+      - RADIANCE_MXFP4_WPERM=${RADLIGHT_RADIANCE_MXFP4_WPERM:-1}
+      - RADIANCE_MXFP4_DECODE_NT=${RADLIGHT_RADIANCE_MXFP4_DECODE_NT:-1}
+      - RADIANCE_MXFP4_A_TILED_MIN_M=${RADLIGHT_RADIANCE_MXFP4_A_TILED_MIN_M:-513}
+      - RADIANCE_MXFP4_SANITIZE=${RADLIGHT_RADIANCE_MXFP4_SANITIZE:-0}
+      - RADIANCE_MXFP4_HOIST_QUANT=${RADLIGHT_RADIANCE_MXFP4_HOIST_QUANT:-1}
+      - RADIANCE_MXFP4_TRACED_QUANT=${RADLIGHT_RADIANCE_MXFP4_TRACED_QUANT:-1}
+      # --- GDN (Gated-DeltaNet) fused update / merge-in-projection --------
+      - RADIANCE_GDN_MERGE_INPROJ=${RADLIGHT_RADIANCE_GDN_MERGE_INPROJ:-1}
+      - RADIANCE_GDN_FUSED_UPDATE=${RADLIGHT_RADIANCE_GDN_FUSED_UPDATE:-1}
+      - RADIANCE_GDN_FUSED_MAX_ITEMS=${RADLIGHT_RADIANCE_GDN_FUSED_MAX_ITEMS:-48}
+      # --- R4D reporting and FP8 attention ---------------------------------
+      - RADIANCE_USE_R4D=${RADLIGHT_RADIANCE_USE_R4D:-1}
+      - RADIANCE_R4D_REPORT=${RADLIGHT_RADIANCE_R4D_REPORT:-1}
+      - R4D_ATTN_FP8=${RADLIGHT_R4D_ATTN_FP8:-3}
+      # --- FP8 streaming / dynamic width / preshuffle / fusion ------------
+      - RADIANCE_FP8_STREAM=${RADLIGHT_RADIANCE_FP8_STREAM:-1}
+      - RADIANCE_FP8_STREAM_TP1=${RADLIGHT_RADIANCE_FP8_STREAM_TP1:-1}
+      - RADIANCE_DYNAMIC_WIDTH=${RADLIGHT_RADIANCE_DYNAMIC_WIDTH:-1}
+      - RADIANCE_PRESHUFFLE=${RADLIGHT_RADIANCE_PRESHUFFLE:-1}
+      - RADIANCE_FUSE_RMS_QUANT=${RADLIGHT_RADIANCE_FUSE_RMS_QUANT:-1}
+      - RADIANCE_RMS_QUANT_FUSION=${RADLIGHT_RADIANCE_RMS_QUANT_FUSION:-1}
+      - RADIANCE_SKINNY_GEMM=${RADLIGHT_RADIANCE_SKINNY_GEMM:-1}
+      - RADIANCE_TOPK_TRITON_MIN_ROWS=${RADLIGHT_RADIANCE_TOPK_TRITON_MIN_ROWS:-1}
+      - RADIANCE_KV_GROUP_OPT=${RADLIGHT_RADIANCE_KV_GROUP_OPT:-1}
+      # --- speculative decoding: Radiance's OWN dynamic-draft path is
+      # intentionally OFF here -- this profile drives speculative decoding
+      # explicitly via --speculative-config (DFlash2, below), not this
+      # implicit env-var-armed path. Do not turn this on at the same time
+      # as --speculative-config; see docs/RADLIGHT-TUNABLES.md.
+      - RADIANCE_FAST_DRAFT=${RADLIGHT_RADIANCE_FAST_DRAFT:-0}
+      - RADIANCE_DYNAMIC_DRAFT=${RADLIGHT_RADIANCE_DYNAMIC_DRAFT:-0}
+      # --- caches (compiled artifacts only; never the model weights) -----
+      - VLLM_CACHE_ROOT=/cache/vllm
+      - TORCHINDUCTOR_CACHE_DIR=/cache/inductor
+      - TRITON_CACHE_DIR=/cache/triton
+      - AITER_ROOT_DIR=/cache/aiter
+      - TRITON_CACHE_AUTOTUNING=${RADLIGHT_TRITON_CACHE_AUTOTUNING:-1}
+    volumes:
+      # Radlight's own source checkout (pinned by scripts/sync-radlight.sh),
+      # read-only. The entrypoint only ever reads from it (copies patch
+      # modules into site-packages, runs `git rev-parse` for submodule
+      # commit hashes) -- .git must stay readable, never needs to be
+      # writable at runtime.
+      - ${RADLIGHT_LOCAL_PATH}:/opt/repo:ro
+      # Model checkpoints, pinned HF revisions, read-only.
+      - ${RADLIGHT_TARGET_MODEL_DIR}:/models/target:ro
+      - ${RADLIGHT_DRAFTER_MODEL_DIR}:/models/drafter:ro
+      # Compiled-kernel cache (libr4d.so, the MXFP4xFP8 HIP extension) and
+      # torch.compile/Triton/AITER caches -- the only read-write mount.
+      - ${RADLIGHT_CACHE_DIR}:/cache
+    # Same API_PORT variable as compose.yaml (not a separate RADLIGHT_*
+    # one) -- deploy.sh exports API_PORT=8081 (RADLIGHT_API_PORT in .env is
+    # just that default's documentation) for canary runs and only points
+    # .env's API_PORT at 8080 when scripts/deploy.sh --promote runs, the
+    # same convention compose.yaml already uses for the baseline stack's
+    # own staging-vs-production port.
+    ports:
+      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8081}:8000"
+    # Radlight's own entrypoint (entrypoint/init.sh) does the on-the-fly
+    # source-patch application and native-kernel build (cached after the
+    # first run), then execs `vllm serve "$@"`. Same sh -c / doubled-$$
+    # idiom as compose.yaml (see its comment for the exact failure mode
+    # this avoids: a bare newline inside sh -c ends the statement early and
+    # silently drops every flag after it) -- entrypoint: [] bypasses the
+    # base image's own default entrypoint, which is not Radlight's init.sh
+    # (that only exists inside the read-only /opt/repo mount).
+    # $${SPEC_DECODE_ARGS} and $${CHAT_TEMPLATE_ARGS} are whole
+    # already-shell-quoted flag(s) from the model profile (may be empty --
+    # empty SPEC_DECODE_ARGS disables DFlash2, empty CHAT_TEMPLATE_ARGS
+    # uses the checkpoint's own bundled template instead of Radlight's).
+    entrypoint: []
+    command: >
+      sh -c '
+        exec /opt/repo/entrypoint/init.sh \
+          /models/target \
+          --served-model-name "$$SERVED_MODEL_NAME" \
+          --kv-cache-dtype "$$KV_CACHE_DTYPE" \
+          --tensor-parallel-size 1 \
+          --kv-cache-memory-bytes "$$KV_CACHE_MEMORY_BYTES" \
+          --max-model-len "$$MAX_MODEL_LEN" \
+          --max-num-seqs "$$MAX_NUM_SEQS" \
+          --max-num-batched-tokens "$$MAX_NUM_BATCHED_TOKENS" \
+          --language-model-only \
+          --attention-backend ROCM_AITER_UNIFIED_ATTN \
+          --compilation-config "$$RADLIGHT_COMPILATION_CONFIG" \
+          --enable-prefix-caching \
+          --mamba-cache-mode align \
+          --mamba-cache-dtype bfloat16 \
+          --mamba-ssm-cache-dtype float16 \
+          $${SPEC_DECODE_ARGS} \
+          $${CHAT_TEMPLATE_ARGS} \
+          --reasoning-parser "$$REASONING_PARSER" \
+          --tool-call-parser "$$TOOL_CALL_PARSER" \
+          --enable-auto-tool-choice \
+          --no-async-scheduling \
+          --trust-remote-code \
+          --host 0.0.0.0 \
+          --port 8000 \
+          $$EXTRA_VLLM_ARGS
+      '
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # First run per submodule-commit pair also compiles libr4d.so and the
+      # MXFP4xFP8 HIP extension (a few minutes each, per Radlight's own
+      # entrypoint comments) on top of the usual 27B cold-load time.
+      start_period: 2400s

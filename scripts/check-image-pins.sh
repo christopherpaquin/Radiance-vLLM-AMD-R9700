@@ -17,7 +17,7 @@ while IFS= read -r line; do
     echo "[check-image-pins] FAIL: floating :latest tag found: $line" >&2
     fail=1
   fi
-done < <(grep -rn 'image:' "$REPO_ROOT/compose.yaml" 2>/dev/null || true)
+done < <(grep -rn 'image:' "$REPO_ROOT/compose.yaml" "$REPO_ROOT/compose.radlight.yaml" 2>/dev/null || true)
 
 if [[ "$fail" -eq 1 ]]; then
   exit 1

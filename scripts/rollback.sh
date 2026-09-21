@@ -10,10 +10,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
-log_step "Stopping radiance-vllm"
 PROFILE="$(load_current_profile)"
+STACK="$(load_current_stack)"
 export MODEL_PROFILE="$PROFILE"
-compose stop radiance-vllm 2>/dev/null || log_warn "radiance-vllm stop returned non-zero (may already be stopped)"
+export STACK_FLAVOR="${STACK:-radiance-baseline}"
+CONTAINER="$(container_name_for_stack "${STACK:-radiance-baseline}")"
+
+log_step "Stopping ${CONTAINER} (stack: ${STACK:-radiance-baseline})"
+compose stop "$CONTAINER" 2>/dev/null || log_warn "${CONTAINER} stop returned non-zero (may already be stopped)"
+# Belt-and-suspenders: also stop the OTHER stack's container if it happens
+# to be running (e.g. a radlight canary left up on 8081 during a manual
+# final-fallback invocation) -- final rollback should never leave a second
+# GPU-resident container competing for VRAM with llama.cpp.
+for other in radiance-vllm radlight-vllm; do
+  [[ "$other" == "$CONTAINER" ]] && continue
+  if docker inspect "$other" --format '{{.State.Running}}' 2>/dev/null | grep -q true; then
+    log_warn "${other} is also running -- stopping it too before starting llama.cpp"
+    docker stop "$other" 2>/dev/null || true
+  fi
+done
 
 log_step "Restoring llama.cpp"
 if ! docker update --restart=unless-stopped llamacpp; then

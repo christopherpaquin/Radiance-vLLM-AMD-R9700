@@ -2,6 +2,117 @@
 
 Append-only. Matches sibling repos' convention on this host.
 
+## 2026-09-21
+
+- Started `feat/radlight-integration`: integrating
+  `https://codeberg.org/hifi/vllm-radlight` as a second, independently-
+  pinned stack flavor (`radlight`) alongside the existing production
+  `radiance-baseline` stack -- NOT replacing it. See the mission spec's
+  "Critical compatibility rule": Radlight patches AMD's own vLLM 0.27/
+  ROCm 10 image, completely different from this repo's current vLLM
+  0.28/ROCm 7.14 (`magiccodingman/vllm-radiance`) image -- treated as two
+  complete, independently-pinned stacks throughout.
+- Mandatory initial inspection performed before any change: read
+  README/STATUS/VERSIONS/WORKLOG/compose.yaml/.env-template/
+  qwen38-27b.env/docs/*.md/plan-*.md and every lifecycle script. Recorded
+  baseline state: branch `main` clean at `7dec8bb`, production
+  `radiance-vllm` healthy on `:8080` (`RedHatAI/Qwen3.8-27B-INT4`,
+  `scar-coder`, 131072 ctx), VRAM 33.57/34.21GiB used (nearly full,
+  confirming the single-GPU-exclusivity constraint the mission spec
+  assumes), `llamacpp` present and stopped (restart policy `no`) as the
+  existing rollback target, Docker 29.7.2 / Compose v5.4.0, 498GiB free
+  under `/var/lib`, raptor.lab reachable over SSH (OpenCode/PI live
+  there), a live `hermes`/`hermes-dashboard` pair already running against
+  the production endpoint.
+- Cloned Radlight with submodules to
+  `/var/lib/radiance-vllm/upstream/vllm-radlight` (outside any Git working
+  tree -- it has no top-level LICENSE file, verified by directory listing;
+  see `docs/RADLIGHT-TUNABLES.md` "Licensing"). The default clone landed
+  exactly on the mission's pinned commits for all three
+  (top-level `f93de10c3d47782edd9ec7a0a69afb0974c5fc63`, `libr4d`
+  `b9e42ab7202f53a3bc13d415f5d41481f9ca311b`, `radiance-vllm-mxfp4`
+  `037e7fc558038fb73fc7fee1fae504026ffc5087`) -- no drift correction
+  needed, but `scripts/sync-radlight.sh` verifies all three explicitly
+  and fails closed on any future mismatch rather than trusting that this
+  stays true.
+- Read Radlight's actual `run.sh`/`entrypoint/init.sh`/`README.md` in
+  full (not assumed from the mission brief) -- confirmed it has NO build
+  step: it patches an on-the-fly-mounted vLLM install inside AMD's own
+  `rocm/vllm:rocm10.0.0_..._vllm_0.27.0` image via ~34 source patches
+  applied in a fixed order from the `radiance-vllm-mxfp4` submodule, then
+  compiles `libr4d.so` and a fork-specific MXFP4xFP8 HIP extension,
+  caching both by submodule commit hash. This shaped
+  `compose.radlight.yaml`'s design: the Radlight checkout mounts
+  read-only at `/opt/repo`, only a compiled-kernel cache directory is
+  read-write, matching Radlight's own "no write access outside its cache"
+  design intent.
+- Resolved and pinned the base image's immutable manifest digest
+  (`docker manifest inspect --verbose`, linux/amd64):
+  `sha256:b8a082f346d069376d35784250e38b23a043efe979408ae3a33d7c6b62ee3276`.
+  Started pulling it in the background (large image, ~similar order of
+  magnitude to the sibling `rocm/vllm` 7.14 image already on this host at
+  73.4GB).
+- Resolved exact HF revisions via the Hub API (never a mutable branch):
+  target `amd/Qwen3.8-27B-Quark-AWQ-MXFP4@5233554c5fa56afda40150556b95573c2d7d29c0`
+  (19.82GB), drafter
+  `tcclaviger/Qwen3.8-27B-DFlash2-FP8@ee0cb26a8279b7910cc28d82a8a3e15e4728d56f`
+  (2.12GB). Wrote `scripts/sync-radlight-models.sh` (pure curl/jq/python3,
+  no `huggingface_hub` dependency -- not installed on this host) to
+  download both into plain local directories under
+  `hf-cache/radlight-models/`, verifying every file by LFS sha256 or
+  git-blob sha1 after download. Started this in the background too.
+- Wrote `compose.radlight.yaml` (translated from Radlight's Podman
+  `run.sh` per the mission's compatibility rules: numeric GIDs not
+  `keep-groups`, no `-ti`/`--rm`, `restart: unless-stopped`, `seccomp=
+  unconfined` not `label=disable`, no privileged mode, no Docker socket,
+  models/repo read-only) and five model profiles under `config/models/`
+  (`qwen38-27b-radlight` exact-parity, `-balanced`/`-compat` context
+  fallbacks, `-nospec` for the DFlash2 equivalence gate, `-template` for
+  the chat-template A/B test). Verified both `docker compose config`
+  renders cleanly (`compose.yaml` unchanged/still valid,
+  `compose.radlight.yaml` new).
+- Made the lifecycle scripts stack-aware rather than hardcoding
+  `compose.yaml`/`radiance-vllm`: `scripts/lib/common.sh` gained
+  `stack_for_profile`/`compose_file_for_stack`/`container_name_for_stack`
+  (stack is derived from the profile name, never a separate flag an
+  operator could forget) plus a `current-stack` state file alongside the
+  existing `current-profile` one. Updated `deploy.sh`, `status.sh`,
+  `benchmark.sh`, `validate-model.sh` (previously didn't even source
+  `common.sh` -- had its own hardcoded `compose.yaml` `COMPOSE` array),
+  `restore-or-shutdown.sh`, `rollback.sh`, `stop.sh` accordingly.
+- Extended the automatic-rollback safety net for the specific two-level
+  case the mission requires: `restore-or-shutdown.sh` now auto-falls-through
+  to `scripts/rollback.sh` (llama.cpp) if a **radlight** deploy fails AND
+  restoring the radiance-baseline profile it displaced ALSO fails --
+  scoped specifically to `failed_stack == "radlight"` so this doesn't
+  change existing behavior for a same-stack (radiance-baseline-to-
+  radiance-baseline) profile-switch failure, which still just brings the
+  service down for an operator to decide, as before.
+- Wrote `scripts/canary-radlight.sh` (captures a machine-readable rollback
+  manifest + redacted `.env` snapshot, stops the current production stack
+  cleanly, deploys the radlight profile on the canary port, relies on
+  `deploy.sh`'s existing health-wait + `validate-model.sh` gate),
+  `scripts/promote-radlight.sh` (canary port -> 8080, mirrors the original
+  `cutover.sh` pattern), `scripts/rollback-radlight.sh` (manual level-1
+  rollback, radlight -> radiance-baseline, independent of the final
+  llama.cpp fallback).
+- Wrote `docs/RADLIGHT-TUNABLES.md`: the full tunable-by-tunable
+  classification (required/adopted, adopted-but-configurable,
+  intentionally-disabled, not-applicable-under-Docker, rejected) for
+  every environment variable in Radlight's `run.sh`, plus the model/
+  image/context-profile/chat-template/speculative-decoding comparison
+  tables the mission requires. Flagged the `--kv-cache-memory` flag
+  spelling as needing verification against this exact pulled image's
+  `vllm serve --help` before the first real deploy (not guessed).
+- Ran `shellcheck` against every new/modified script (one SC2155 warning
+  fixed in `stop.sh`; everything else clean) and `docker compose config`
+  against both compose files (both render without error).
+- **Not yet done as of this entry**: the model/base-image downloads were
+  still in progress; the actual sequential canary
+  (`scripts/canary-radlight.sh`), every correctness/tool-call/DFlash2-
+  equivalence/long-context validation gate, benchmark comparison, and
+  promotion have not run yet. Production is untouched. See `STATUS.md`.
+
 ## 2026-09-14
 
 - Created `plan-radiance-vllm.md` and `plan-radiance-observability.md`

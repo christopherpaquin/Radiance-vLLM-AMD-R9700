@@ -56,6 +56,53 @@ exact host hit this from unconstrained container host-RAM growth. Raise
 both values if real steady-state usage (`docker stats radiance-vllm`)
 exceeds the current limit, rather than removing the limit.
 
+## Radlight canary (two-level rollback)
+
+This repo now has two independently-pinned inference stacks:
+`radiance-baseline` (`compose.yaml`, production today) and `radlight`
+(`compose.radlight.yaml`, candidate) -- see `VERSIONS` and
+`docs/RADLIGHT-TUNABLES.md`. Both are subject to the SAME single-GPU VRAM
+exclusivity as the llama.cpp-vs-Radiance case above: only one can be
+resident at a time.
+
+Procedure:
+
+```sh
+# 1. Acquire/verify Radlight's pinned source + model checkpoints (idempotent,
+#    safe to re-run; does not touch any running container).
+scripts/sync-radlight.sh
+scripts/sync-radlight-models.sh
+
+# 2. Sequential canary: stops the current production stack, deploys the
+#    radlight profile on the canary port (8081), runs the same
+#    validate-model.sh guardrails production deploys get. Automatically
+#    restores the prior stack (and falls through to llama.cpp if THAT also
+#    fails) on any failure -- see scripts/restore-or-shutdown.sh.
+scripts/canary-radlight.sh qwen38-27b-radlight
+
+# 3. Everything else in the mission's validation matrix (long-context,
+#    DFlash2 equivalence via qwen38-27b-radlight-nospec, chat-template A/B
+#    via qwen38-27b-radlight-template, benchmark.sh) runs against
+#    http://localhost:8081/v1 while the canary is up -- production traffic
+#    is down for this whole window, by design (VRAM exclusivity).
+
+# 4. Only after every gate passes:
+scripts/promote-radlight.sh qwen38-27b-radlight
+```
+
+Rollback (two levels, from either state):
+
+```sh
+scripts/rollback-radlight.sh   # level 1: radlight -> radiance-baseline
+scripts/rollback.sh            # level 2 / final: -> llama.cpp
+```
+
+`scripts/canary-radlight.sh` writes a machine-readable rollback manifest to
+`/var/lib/radiance-vllm/state/rollback-manifest.json` (plus a redacted
+`.env` snapshot alongside it) before touching anything, recording the prior
+stack/profile/image-digest/port so a rollback is never guessing what to
+restore.
+
 ## Single-GPU VRAM contention with llama.cpp during validation
 
 This host's single 32GB GPU cannot hold both llama.cpp's production model
