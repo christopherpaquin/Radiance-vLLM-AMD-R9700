@@ -1,0 +1,1 @@
+{"model": "scar-coder", "temperature": 0, "seed": 42, "chat_template_kwargs": {"enable_thinking": false}, "messages": [{"role": "user", "content": "Explain, in exactly 3 sentences, how binary search works."}], "max_tokens": 200}

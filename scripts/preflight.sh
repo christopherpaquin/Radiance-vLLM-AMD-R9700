@@ -222,22 +222,29 @@ fi
 if [[ "$CUTOVER_MODE" -eq 1 ]]; then
   section "Cutover readiness (--cutover)"
 
-  # Accept two valid pre-cutover states: llamacpp actively running on
-  # :8080 (the originally-designed fully-concurrent staging scenario),
-  # or llamacpp stopped-but-restart-enabled (this host's actual
-  # situation -- a single 32GB R9700 can't hold both models resident
-  # simultaneously, so llamacpp was deliberately stopped, not
-  # crashed/missing, to free VRAM for staging validation -- see
-  # docs/runbook.md). Either way, the container object itself existing
-  # with a container-not-found state is what's actually unsafe.
+  # Accept three valid states -- this check runs before BOTH the original
+  # llama.cpp -> radiance-baseline cutover AND any later
+  # radiance-baseline -> radlight promotion, and llama.cpp's expected
+  # state differs across those:
+  #   1. llamacpp actively running on :8080 (the originally-designed
+  #      fully-concurrent staging scenario, pre-first-cutover).
+  #   2. llamacpp stopped but restart-enabled (VRAM contention during
+  #      the first cutover's staging window -- see docs/runbook.md).
+  #   3. llamacpp stopped with restart policy 'no' -- the STABLE,
+  #      EXPECTED state once any cutover has already completed and
+  #      llama.cpp has been the long-retired final fallback ever since
+  #      (this is what a radlight promotion, which replaces
+  #      radiance-baseline, not llama.cpp, on port 8080, actually sees --
+  #      llama.cpp being untouched here is correct, not a broken target).
+  # Only a missing/uninspectable container is actually unsafe.
   llamacpp_running="$(docker inspect llamacpp --format '{{.State.Running}}' 2>/dev/null || echo unknown)"
   llamacpp_restart_policy="$(docker inspect llamacpp --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null || echo unknown)"
   if [[ "$llamacpp_running" == "true" ]]; then
     pass "Port 8080 is currently owned by the expected container (llamacpp, running)"
-  elif [[ "$llamacpp_running" == "false" && "$llamacpp_restart_policy" != "no" ]]; then
-    pass "llamacpp is stopped but autostart is still enabled (restart policy: ${llamacpp_restart_policy}) -- valid pre-cutover state on this host (VRAM contention, see docs/runbook.md), not a missing/broken rollback target"
+  elif [[ "$llamacpp_running" == "false" ]]; then
+    pass "llamacpp is stopped (restart policy: ${llamacpp_restart_policy}) -- a valid rollback target whether that's this cutover's own staging state or a long-retired final fallback from an earlier one"
   else
-    fail "llamacpp container state ('${llamacpp_running}', restart policy '${llamacpp_restart_policy}') doesn't match either expected pre-cutover state -- refusing to proceed with an unverified cutover target. Investigate before running cutover.sh."
+    fail "llamacpp container state could not be determined ('${llamacpp_running}', restart policy '${llamacpp_restart_policy}') -- refusing to proceed with an unverified cutover target. Investigate before running cutover.sh."
   fi
 
   port_owner="$(ss -ltnp 2>/dev/null | awk '$4 ~ /:8080$/ {print}')"

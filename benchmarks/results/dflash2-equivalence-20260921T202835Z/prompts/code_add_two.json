@@ -1,0 +1,1 @@
+{"model": "scar-coder", "temperature": 0, "seed": 42, "chat_template_kwargs": {"enable_thinking": false}, "messages": [{"role": "user", "content": "Write a Python function named add_two that takes two integers and returns their sum. Reply with ONLY the code, no explanation, no markdown code fences."}], "max_tokens": 256}

@@ -1,0 +1,1 @@
+{"content": "", "tool_calls": [{"arguments": {"location": "Portland, Oregon"}, "name": "get_weather"}]}

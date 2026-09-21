@@ -1,0 +1,1 @@
+{"content": "Binary search operates on a sorted array by repeatedly dividing the search interval in half. It compares the middle element to the target value, then discards the half of the interval that cannot contain the target. This process continues until the target is found or the interval is empty, resulting in a time complexity of O(log n).", "tool_calls": []}

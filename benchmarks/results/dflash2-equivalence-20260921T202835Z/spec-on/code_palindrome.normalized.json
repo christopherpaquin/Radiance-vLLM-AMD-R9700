@@ -1,0 +1,1 @@
+{"content": "def is_palindrome(s):\n    cleaned = ''.join(c.lower() for c in s if c.isalnum())\n    return cleaned == cleaned[::-1]", "tool_calls": []}

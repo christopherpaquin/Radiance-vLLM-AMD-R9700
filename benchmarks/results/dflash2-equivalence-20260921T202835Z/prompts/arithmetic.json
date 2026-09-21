@@ -1,0 +1,1 @@
+{"model": "scar-coder", "temperature": 0, "seed": 42, "chat_template_kwargs": {"enable_thinking": false}, "messages": [{"role": "user", "content": "What is 47 * 89? Reply with only the numeric answer, no words, no punctuation."}], "max_tokens": 16}

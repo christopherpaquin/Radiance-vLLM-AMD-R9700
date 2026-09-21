@@ -1,0 +1,1 @@
+{"model": "scar-coder", "temperature": 0, "seed": 42, "chat_template_kwargs": {"enable_thinking": false}, "messages": [{"role": "user", "content": "Return a JSON object with keys name (string, value test) and value (integer, value 42). Reply with ONLY the JSON, no explanation."}], "max_tokens": 64}
