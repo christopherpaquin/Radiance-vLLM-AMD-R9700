@@ -54,6 +54,16 @@ services:
       # --- generic ROCm/allocator ---------------------------------------
       - PYTORCH_CUDA_ALLOC_CONF=${RADLIGHT_PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       - HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
+      # entrypoint/init.sh runs `git -C /opt/repo rev-parse HEAD:<submodule>`
+      # to key the compiled-kernel cache -- the read-only bind mount is
+      # owned by the host UID, not the container's, which trips git's
+      # "dubious ownership" safety check (fatal, crash-loops the
+      # container). Configuring it via GIT_CONFIG_* env vars (git >=2.31)
+      # avoids needing to write into the read-only /opt/repo mount or
+      # patch Radlight's own entrypoint script.
+      - GIT_CONFIG_COUNT=1
+      - GIT_CONFIG_KEY_0=safe.directory
+      - GIT_CONFIG_VALUE_0=/opt/repo
       # Offline after models are downloaded -- scripts/sync-radlight-models.sh
       # pre-populates RADLIGHT_TARGET_MODEL_DIR/RADLIGHT_DRAFTER_MODEL_DIR
       # before this container ever starts, so there is nothing to fetch at

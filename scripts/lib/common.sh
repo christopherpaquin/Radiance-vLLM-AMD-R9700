@@ -92,12 +92,30 @@ log_step()  { printf '%s==>%s %s\n' "${COLOR_BLUE}" "${COLOR_RESET}" "$*" >&2; }
 
 # Loads .env into the current shell (export). Does not fail if .env is
 # missing -- callers that require it should check for themselves.
+#
+# API_PORT is special-cased: a caller that already exported it (e.g.
+# canary-radlight.sh setting API_PORT=8081 for a canary deploy that must
+# NOT touch .env's persisted production value) keeps its own value rather
+# than being silently clobbered back to whatever is on disk. Every other
+# variable still loads from .env as before. Without this, a canary/
+# promotion deploy's health-check wait loop would poll the wrong port
+# after this function re-sources .env post-`compose up` (see deploy.sh) --
+# this exact bug was hit live during the first radlight canary run.
 load_env() {
   if [[ -f "${REPO_ROOT}/.env" ]]; then
+    local api_port_override=""
+    local api_port_was_set=0
+    if [[ -n "${API_PORT+x}" ]]; then
+      api_port_was_set=1
+      api_port_override="$API_PORT"
+    fi
     set -a
     # shellcheck disable=SC1091
     source "${REPO_ROOT}/.env"
     set +a
+    if [[ "$api_port_was_set" -eq 1 ]]; then
+      export API_PORT="$api_port_override"
+    fi
   fi
 }
 

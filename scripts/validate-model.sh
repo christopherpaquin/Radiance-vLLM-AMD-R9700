@@ -167,16 +167,19 @@ run_validation() {
   local PROFILE_PATH="${REPO_ROOT}/config/models/${profile}.env"
   [[ -f "$PROFILE_PATH" ]] || { log "unknown profile: $profile"; return 2; }
 
-  # Only .env is `source`d -- profile files (config/models/*.env) can
-  # contain multi-word values (e.g. EXTRA_VLLM_ARGS="--foo --bar 32"),
-  # which bash's `source` mis-parses as `VAR=firstword` followed by a
-  # separate command invocation of the remaining words (harmless here
-  # since nothing from the profile is needed beyond what the live
-  # /v1/models call and .env already provide, but avoid it regardless).
-  # shellcheck source=/dev/null
-  set -a
-  source "${REPO_ROOT}/.env"
-  set +a
+  # Only .env is loaded -- profile files (config/models/*.env) can contain
+  # multi-word values (e.g. EXTRA_VLLM_ARGS="--foo --bar 32"), which bash's
+  # `source` mis-parses as `VAR=firstword` followed by a separate command
+  # invocation of the remaining words (harmless here since nothing from
+  # the profile is needed beyond what the live /v1/models call and .env
+  # already provide, but avoid it regardless). load_env (not a raw
+  # `source`) is required here: it preserves an already-exported API_PORT
+  # instead of clobbering it back to .env's persisted value -- a canary
+  # deploy exports a different API_PORT deliberately (see
+  # canary-radlight.sh) and this exact clobbering bug caused a real
+  # radlight canary's guardrail check to poll the wrong (down) port during
+  # this integration's first live run.
+  load_env
 
   local BASE_URL
   BASE_URL="http://localhost:${API_PORT:-8081}"
@@ -187,9 +190,17 @@ run_validation() {
   export MODEL_PROFILE="$profile"
 
   local models_json model_id
-  models_json="$(curl -fsS --max-time 10 "$BASE_URL/v1/models" 2>&1)" || { log "cannot reach $BASE_URL/v1/models"; return 1; }
+  models_json="$(curl -fsS --max-time 10 "$BASE_URL/v1/models" 2>&1)" || {
+    log "cannot reach $BASE_URL/v1/models"
+    "$SCRIPT_DIR/restore-or-shutdown.sh" "$profile"
+    return 1
+  }
   model_id="$(python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])" <<<"$models_json" 2>/dev/null || true)"
-  [[ -n "$model_id" ]] || { log "could not determine served model id"; return 1; }
+  if [[ -z "$model_id" ]]; then
+    log "could not determine served model id"
+    "$SCRIPT_DIR/restore-or-shutdown.sh" "$profile"
+    return 1
+  fi
 
   local FAILURES=()
 

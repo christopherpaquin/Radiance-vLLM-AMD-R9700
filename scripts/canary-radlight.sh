@@ -54,7 +54,13 @@ mkdir -p "$STATE_DIR"
 log_step "Capturing rollback manifest"
 load_env
 PRIOR_CONTAINER="$(container_name_for_stack "$PRIOR_STACK")"
-prior_image_digest="$(docker inspect "$PRIOR_CONTAINER" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo unknown)"
+# .RepoDigests lives on the IMAGE object, not the container -- inspect the
+# container only to resolve which image it's running, then inspect that.
+prior_image_ref="$(docker inspect "$PRIOR_CONTAINER" --format '{{.Image}}' 2>/dev/null || true)"
+prior_image_digest="unknown"
+if [[ -n "$prior_image_ref" ]]; then
+  prior_image_digest="$(docker inspect "$prior_image_ref" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo unknown)"
+fi
 prior_port="$(docker inspect "$PRIOR_CONTAINER" --format '{{range $p, $b := .NetworkSettings.Ports}}{{(index $b 0).HostPort}}{{end}}' 2>/dev/null || echo unknown)"
 
 # Effective .env, secrets excluded (TOKEN/KEY/SECRET in the var name).
