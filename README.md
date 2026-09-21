@@ -12,14 +12,19 @@ while preserving a tested rollback path.
 |---|---|
 | API | `http://scar.lab:8080/v1` |
 | Dashboard | `http://scar.lab:8088/` |
-| Model | `RedHatAI/Qwen3.8-27B-INT4`, served as `scar-coder` |
-| Runtime | Radiance-patched vLLM 0.28.0 on ROCm |
-| Context | 131,072 configured tokens; 262,144 native model context |
-| KV cache | FP8, approximately 358,958-token capacity |
-| Container | `radiance-vllm` |
+| Model | `amd/Qwen3.8-27B-Quark-AWQ-MXFP4`, served as `scar-coder` |
+| Runtime | Radlight-patched vLLM 0.27 on ROCm 10 (`radlight` stack) |
+| Context | 262,144 tokens (native) |
+| KV cache | FP8, explicit 9.5GiB allocation, ~281K-token capacity |
+| Speculative decoding | DFlash2 (7 tokens), equivalence-gated |
+| Container | `radlight-vllm` |
 
-The deployment is operational and cut over to production. See `STATUS.md` for
-the current state and `WORKLOG.md` for the implementation record.
+Promoted from the prior `radiance-baseline` stack (`RedHatAI/Qwen3.8-27B-INT4`
+on vLLM 0.28/ROCm 7.14) on 2026-09-21 -- see `docs/RADLIGHT-TUNABLES.md` for
+the full comparison and `STATUS.md` for current state. `radiance-baseline`
+remains present (stopped, container `radiance-vllm`) as the level-1
+rollback target; llama.cpp remains the untouched final fallback.
+See `WORKLOG.md` for the implementation record.
 
 **Read `plan-radiance-vllm.md` and `plan-radiance-observability.md` first.**
 They contain the full design rationale, verified research, and explicit

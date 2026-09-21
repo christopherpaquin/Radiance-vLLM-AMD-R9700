@@ -1,39 +1,79 @@
 # Migration Status
 
-Last updated: 2026-09-21, by the session integrating the Radlight stack
-(branch `feat/radlight-integration`). The 2026-09-14 entry below (Phases
-0-4 of `plan-radiance-vllm.md`) is unchanged and still accurate for the
-`radiance-baseline` stack.
+Last updated: 2026-09-21, by the session that promoted Radlight to
+production (branch `feat/radlight-integration`). The 2026-09-14 entry
+below (Phases 0-4 of `plan-radiance-vllm.md`) documents the prior
+Radiance-baseline cutover and remains accurate as history, but
+Radiance-baseline is **no longer the production stack** -- see below.
 
-## Radlight integration: CANARY VALIDATED, NOT YET PROMOTED
+## Radlight: LIVE IN PRODUCTION (promoted 2026-09-21)
 
-Production (`scar.lab:8080/v1`) is served by the `radiance-baseline` stack
-(`radiance-vllm` container, `qwen38-27b` profile) -- **unchanged**. A
-second, independently-pinned stack (`radlight`, see `VERSIONS` and
-`docs/RADLIGHT-TUNABLES.md`) has been added, and its sequential canary
-has been run successfully (three attempts; see `WORKLOG.md` for the two
-real bugs the first two hit and fixed, and a third transient GPU memory
-fault the container's own restart policy recovered from automatically --
-consistent with Radlight's own README caveat about needing a retry).
+`scar.lab:8080/v1` is served by the **`radlight`** stack (`radlight-vllm`
+container, `qwen38-27b-radlight` profile: `amd/Qwen3.8-27B-Quark-AWQ-MXFP4`,
+262144 ctx, DFlash2 on) -- see `VERSIONS` and `docs/RADLIGHT-TUNABLES.md`.
+`radiance-vllm` (the prior production stack) is preserved stopped, not
+removed, as the level-1 rollback target; `llamacpp` remains the untouched
+final fallback.
 
-The canary passed the full `scripts/validate-model.sh` guardrail suite
-(VRAM postflight: 1.72GiB headroom; known-answer arithmetic + code
-fixtures; tool-call determinism across 4 trials including a restart) and
-all 6 `scripts/test-tool-calling.sh` scenarios. Kernel evidence confirmed
-live: R4D GDN engaged, MXFP4 304/304 layers on-kernel, DFlash2 genuinely
-proposing/accepting tokens (~46% acceptance rate), FP8 kernels real (not
-fallback). One informal benchmark point measured 61.23 tok/s vs. the
-baseline's ~23-24 tok/s (~2.5x). Full detail: `docs/RADLIGHT-TUNABLES.md`
-"First live canary results."
+Gates passed before promotion:
 
-**Not promoted.** After this first pass, the canary was deliberately
-rolled back to the Radiance-baseline production profile
-(`scripts/rollback-radlight.sh`) rather than promoted -- promotion
-requires the formal DFlash2 equivalence gate, chat-template A/B, the full
-long-context matrix (8K-262K), the complete benchmark matrix, and real
-OpenCode/PI/Hermes agentic validation, none of which have run yet. Radlight
-remains available as a validated-but-experimental profile
-(`scripts/canary-radlight.sh qwen38-27b-radlight` to re-run it).
+- `scripts/validate-model.sh` guardrail suite (VRAM postflight: 1.72-1.73GiB
+  headroom across multiple runs; known-answer arithmetic + code fixtures;
+  tool-call determinism across 4 trials including a restart) and all 6
+  `scripts/test-tool-calling.sh` scenarios -- passed on both the canary
+  and, again, on the production port after promotion.
+- **Formal DFlash2 output-equivalence gate**
+  (`scripts/test-dflash2-equivalence.sh`): 6 deterministic prompts
+  (arithmetic, two code-generation, reasoning, JSON, tool-call), DFlash2
+  on vs. off, byte-identical normalized output on all 6 -- **PASSED**.
+  Full results: `benchmarks/results/dflash2-equivalence-20260921T202835Z/`.
+- Kernel/optimization evidence confirmed live: R4D GDN engaged, MXFP4
+  304/304 layers on-kernel, FP8 kernels real (not fallback), DFlash2
+  genuinely proposing/accepting tokens.
+- Full benchmark matrix (concurrency 1/4/8 x prompt ~512/4096/8192,
+  256 max tokens, production port) vs. the documented Radiance-baseline
+  numbers (`docs/TUNING.md`):
+
+  | Concurrency | Prompt | Radlight tok/s | Baseline tok/s | Ratio |
+  |---:|---:|---:|---:|---:|
+  | 1 | 509 | 64.72 | 24.18 | 2.68x |
+  | 1 | 3653 | 56.53 | 24.05 | 2.35x |
+  | 1 | 7277 | 52.39 | 23.41 | 2.24x |
+  | 4 | 509 | 103.69 | 74.04 | 1.40x |
+  | 4 | 3653 | 102.06 | 74.05 | 1.38x |
+  | 4 | 7277 | 92.09 | 68.12 | 1.35x |
+  | 8 | 509 | 103.31 | 97.33 | 1.06x |
+  | 8 | 3653 | 102.43 | 96.64 | 1.06x |
+  | 8 | 7277 | 92.26 | 86.68 | 1.06x |
+
+  Single-stream decode (concurrency 1, this deployment's stated primary
+  workload) is 2.2-2.7x faster, well past the 25% promotion threshold.
+  The advantage narrows at higher concurrency because this profile's
+  `max_num_seqs=2` caps real parallelism, while the baseline's
+  `max_num_seqs=32` scales further -- an intentional tradeoff matching
+  the stated single-interactive-agent workload priority, not a
+  regression. No errors, OOMs, or crashes occurred during the benchmark
+  run itself.
+
+**Known risk, not fully resolved:** during today's canary/equivalence
+testing (before promotion), the `qwen38-27b-radlight` profile hit
+`HSA_STATUS_ERROR_MEMORY_FAULT` on cold start **3 separate times** across
+different attempts (different kernels each time), all auto-recovered via
+`restart: unless-stopped` on the very next attempt. The promotion
+deploy's own cold start had no fault. This is consistent with Radlight's
+own README caveat ("first run will crash... run it again") given the
+exact-parity profile's very tight VRAM budget, but it is a real,
+repeated pattern on cold start, not a single fluke -- worth monitoring;
+see `docs/RADLIGHT-TUNABLES.md` "First live canary results" for the
+full account. Not yet run: chat-template A/B, the long-context matrix
+(8K-262K), and real OpenCode/PI/Hermes agentic-task validation
+(connectivity was smoke-tested, not a full agentic workflow).
+
+Also fixed as part of this work: `preflight.sh --cutover`'s llama.cpp
+state check only recognized states valid during the *first*
+llama.cpp -> radiance-baseline migration, not llama.cpp's stable
+long-retired state, which blocked `promote-radlight.sh` with a false
+failure.
 
 Completed so far:
 
@@ -48,21 +88,29 @@ Completed so far:
 - `compose.radlight.yaml`, five `config/models/qwen38-27b-radlight*.env`
   profiles, and stack-aware updates to `scripts/lib/common.sh`,
   `deploy.sh`, `status.sh`, `benchmark.sh`, `validate-model.sh`,
-  `restore-or-shutdown.sh`, `rollback.sh` added -- both `docker compose
-  config` renders validate cleanly.
+  `restore-or-shutdown.sh`, `rollback.sh`, `preflight.sh` added -- both
+  `docker compose config` renders validate cleanly.
 - Orchestration scripts: `canary-radlight.sh`, `promote-radlight.sh`,
-  `rollback-radlight.sh` (two-level rollback chain), all exercised live.
+  `rollback-radlight.sh` (two-level rollback chain),
+  `test-dflash2-equivalence.sh`, all exercised live.
+- Fixed a separate sibling repo (`vLLM-Management-Portal`, deploys the
+  `:8088` dashboard): its live throughput/acceptance-rate telemetry read
+  Prometheus metric names vLLM has since removed, so those tiles always
+  showed "Idle"/"Unavailable" regardless of real backend or load. Fixed,
+  rebuilt, redeployed, and verified live against the running Radlight
+  endpoint. See that repo's own WORKLOG.md.
 
-Not yet done: DFlash2 formal equivalence gate, chat-template A/B,
-long-context tests, full benchmark matrix, OpenCode/PI/Hermes agentic
-validation, and promotion. See `docs/runbook.md`'s "Radlight canary"
-section for the procedure and `WORKLOG.md` for the detailed narrative.
+Not yet done: chat-template A/B, the long-context matrix, and full
+OpenCode/PI/Hermes agentic-task validation. See `docs/runbook.md`'s
+"Radlight canary" section for the procedure and `WORKLOG.md` for the
+detailed narrative.
 
-## Radiance-baseline: LIVE IN PRODUCTION (2026-09-14 entry, unchanged)
+## Radiance-baseline: prior production stack (2026-09-14 entry, historical)
 
-`scar.lab:8080/v1` is served by **Radiance vLLM** (`radiance-vllm`
-container), not llama.cpp. This is a completed cutover, not a staging
-deployment.
+`scar.lab:8080/v1` was served by **Radiance vLLM** (`radiance-vllm`
+container) from this cutover until the 2026-09-21 Radlight promotion
+above. `radiance-vllm` remains present (stopped) as the current level-1
+rollback target.
 
 | Component | State |
 |---|---|

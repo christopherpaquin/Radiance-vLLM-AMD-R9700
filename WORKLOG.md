@@ -187,6 +187,90 @@ Append-only. Matches sibling repos' convention on this host.
 - **Status at this entry**: Radlight canary validated once, not promoted.
   Production untouched net of the canary window itself. Full detail:
   `docs/RADLIGHT-TUNABLES.md` "First live canary results", `STATUS.md`.
+- **Ran the formal DFlash2 output-equivalence gate**
+  (`scripts/test-dflash2-equivalence.sh`, new script): deployed
+  `qwen38-27b-radlight` (DFlash2 on) and `qwen38-27b-radlight-nospec`
+  (DFlash2 off, otherwise identical) in turn on the canary port, ran 6
+  fixed deterministic prompts (temperature 0, seed 42, thinking off) --
+  arithmetic, two code-generation, reasoning, JSON, tool-call -- against
+  each, and diffed normalized output (content + canonicalized
+  tool_calls). **All 6 identical.** Restored radiance-baseline afterward.
+  During this run the spec-on profile hit `HSA_STATUS_ERROR_MEMORY_FAULT`
+  twice more on cold start (different kernels each time:
+  `vectorized_gather_kernel` both times here, `FillFunctor` in the
+  earlier canary) before a clean boot -- three total fault-crashes today
+  on this exact profile, all auto-recovered by `restart: unless-stopped`.
+  Not traced to a specific root cause; consistent with Radlight's own
+  README caveat but a real, repeated pattern worth flagging, not a
+  one-off. Also fixed while wrapping up: `docker inspect
+  <container> --format '{{index .RepoDigests 0}}'` doesn't work
+  (`.RepoDigests` lives on the image object, not the container) --
+  present in both `canary-radlight.sh`'s manifest capture and
+  `status.sh`; and `rollback-radlight.sh` used `DEPLOY_IS_RESTORE=1`
+  (correct for automatic failure-recovery, wrong for a deliberate
+  successful operator step-back) without updating the current-profile
+  state file afterward -- fixed by calling `save_current_profile`
+  explicitly there.
+- **Promoted Radlight to production**
+  (`scripts/promote-radlight.sh qwen38-27b-radlight`). First attempt
+  blocked by a real, pre-existing bug in `preflight.sh --cutover`: its
+  llama.cpp state check only recognized states valid during the
+  *original* llama.cpp -> radiance-baseline migration (running, or
+  stopped-with-autostart-on), not llama.cpp's stable long-retired state
+  (stopped, restart policy `no`, true since that first cutover
+  completed months ago) -- which is exactly what a *second* cutover
+  (radiance-baseline -> radlight, llama.cpp untouched throughout) sees.
+  Fixed by accepting any stopped state as valid; only a missing/
+  uninspectable container is actually unsafe. Re-ran: production
+  stopped (preserved, not removed), `radlight-vllm` deployed clean on
+  the first attempt (no fault this time), full guardrail suite passed
+  again on the production port (1.73GiB headroom), all 6 tool-calling
+  scenarios re-passed against `:8080`. **`scar.lab:8080/v1` is now
+  served by `radlight-vllm`.** Verified: Hermes chat completion
+  succeeded, raptor.lab (OpenCode/PI) reachable, dashboard (`:8088`)
+  reachable, `radiance-vllm`/`llamacpp` both preserved stopped (not
+  removed) as the two-level rollback chain.
+- **Ran the full benchmark matrix** (concurrency 1/4/8 x prompt
+  ~512/4096/8192, 256 max tokens) against production, zero errors
+  during load. Single-stream (concurrency 1) decode: 64.72/56.53/52.39
+  tok/s vs. the documented baseline's 24.18/24.05/23.41 -- 2.24x-2.68x,
+  well past the 25% promotion threshold. At concurrency 4/8 the
+  advantage narrows to roughly 1.35-1.40x and ~1.06x respectively,
+  because this profile's `max_num_seqs=2` caps real parallelism while
+  the baseline's `max_num_seqs=32` scales further -- an intentional
+  tradeoff matching the deployment's stated single-interactive-agent
+  priority, not a regression. Full table in `STATUS.md`.
+- **Investigated and fixed the `:8088` dashboard**
+  (`~/Workspace/Git/vLLM-Management-Portal`, a separate sibling repo,
+  separately authorized). Found its live vLLM telemetry
+  (`VLLMEndpointDiscovery`) read four Prometheus metric names vLLM has
+  since removed in favor of raw cumulative counters -- confirmed absent
+  from both this repo's production backends' actual `/metrics` output.
+  The Performance panel's Prompt/Output Throughput tiles had therefore
+  always shown "Idle (0 tok/s)" regardless of real load, for as long as
+  either vLLM stack has been in production. Separately, the
+  speculative-decoding path wrote its computed value under a key
+  (`spec_decode_draft_acceptance_rate`) nothing ever read -- the UI
+  reads `speculative_acceptance_rate`, a key only the llama.cpp path
+  was setting -- so the Speculative Acceptance Rate tile was
+  unconditionally "Unavailable" for every vLLM backend, independent of
+  whether dynamic draft/DFlash2 was active. Fixed by computing
+  throughput as a delta-over-time against the previous poll and both
+  ratios as a windowed delta-of-two-counters ratio (falling back to the
+  all-time ratio on the first poll); added 2 new tests (16/16 pass);
+  rebuilt and redeployed the `portal` container (these files are baked
+  in at build time, not bind-mounted); verified live against the
+  running Radlight endpoint -- both throughput tiles now show real
+  non-zero tok/s during generation, both ratio tiles show real,
+  updating percentages. Full detail in that repo's own WORKLOG.md. The
+  llama.cpp path's equivalent metric names were not independently
+  re-verified (llama.cpp is not currently running).
+- **Status at this entry**: Radlight is live in production, formally
+  validated (guardrail suite, DFlash2 equivalence, tool-calling,
+  benchmark matrix), with one flagged, unresolved risk (the repeated
+  cold-start memory-fault pattern) and three gates not yet run
+  (chat-template A/B, long-context matrix, full OpenCode/PI/Hermes
+  agentic-task validation). See `STATUS.md` for the complete picture.
 
 ## 2026-09-14
 
