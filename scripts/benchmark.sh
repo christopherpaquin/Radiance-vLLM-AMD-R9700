@@ -216,7 +216,7 @@ jq -n \
   --arg model_id_config "$(get_profile_var MODEL_ID)" \
   --arg vllm_version "$vllm_version" \
   --arg rocm_version "$rocm_version" \
-  --arg container_image "${VLLM_IMAGE:-unknown}" \
+  --arg container_image "$([[ "$STACK" == "radlight" ]] && echo "${RADLIGHT_BASE_IMAGE:-unknown}" || echo "${VLLM_IMAGE:-unknown}")" \
   --arg max_model_len "$(get_profile_var MAX_MODEL_LEN)" \
   --arg quantization "$(get_profile_var QUANTIZATION)" \
   --arg kv_cache_dtype "$(get_profile_var KV_CACHE_DTYPE)" \

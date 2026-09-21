@@ -5,13 +5,35 @@ Last updated: 2026-09-21, by the session integrating the Radlight stack
 0-4 of `plan-radiance-vllm.md`) is unchanged and still accurate for the
 `radiance-baseline` stack.
 
-## Radlight integration: IN PROGRESS (not yet promoted)
+## Radlight integration: CANARY VALIDATED, NOT YET PROMOTED
 
-Production (`scar.lab:8080/v1`) is still served by the `radiance-baseline`
-stack (`radiance-vllm` container, `qwen38-27b` profile) -- **unchanged and
-untouched** by this work so far. A second, independently-pinned stack
-(`radlight`, see `VERSIONS` and `docs/RADLIGHT-TUNABLES.md`) has been added
-to the repo but has not yet run its sequential canary as of this entry.
+Production (`scar.lab:8080/v1`) is served by the `radiance-baseline` stack
+(`radiance-vllm` container, `qwen38-27b` profile) -- **unchanged**. A
+second, independently-pinned stack (`radlight`, see `VERSIONS` and
+`docs/RADLIGHT-TUNABLES.md`) has been added, and its sequential canary
+has been run successfully (three attempts; see `WORKLOG.md` for the two
+real bugs the first two hit and fixed, and a third transient GPU memory
+fault the container's own restart policy recovered from automatically --
+consistent with Radlight's own README caveat about needing a retry).
+
+The canary passed the full `scripts/validate-model.sh` guardrail suite
+(VRAM postflight: 1.72GiB headroom; known-answer arithmetic + code
+fixtures; tool-call determinism across 4 trials including a restart) and
+all 6 `scripts/test-tool-calling.sh` scenarios. Kernel evidence confirmed
+live: R4D GDN engaged, MXFP4 304/304 layers on-kernel, DFlash2 genuinely
+proposing/accepting tokens (~46% acceptance rate), FP8 kernels real (not
+fallback). One informal benchmark point measured 61.23 tok/s vs. the
+baseline's ~23-24 tok/s (~2.5x). Full detail: `docs/RADLIGHT-TUNABLES.md`
+"First live canary results."
+
+**Not promoted.** After this first pass, the canary was deliberately
+rolled back to the Radiance-baseline production profile
+(`scripts/rollback-radlight.sh`) rather than promoted -- promotion
+requires the formal DFlash2 equivalence gate, chat-template A/B, the full
+long-context matrix (8K-262K), the complete benchmark matrix, and real
+OpenCode/PI/Hermes agentic validation, none of which have run yet. Radlight
+remains available as a validated-but-experimental profile
+(`scripts/canary-radlight.sh qwen38-27b-radlight` to re-run it).
 
 Completed so far:
 
@@ -20,23 +42,21 @@ Completed so far:
   (`scripts/sync-radlight.sh`, idempotent, re-verified on every run).
 - Base image digest resolved and pinned:
   `docker.io/rocm/vllm@sha256:b8a082f346d069376d35784250e38b23a043efe979408ae3a33d7c6b62ee3276`.
-- Target/drafter model revisions resolved and pinned in `VERSIONS`;
-  download+verification in progress via `scripts/sync-radlight-models.sh`
-  (LFS sha256 / git-blob sha1 verified per file).
+- Target/drafter model checkpoints downloaded and verified (LFS sha256 /
+  git-blob sha1 per file) at pinned HF revisions
+  (`scripts/sync-radlight-models.sh`).
 - `compose.radlight.yaml`, five `config/models/qwen38-27b-radlight*.env`
   profiles, and stack-aware updates to `scripts/lib/common.sh`,
   `deploy.sh`, `status.sh`, `benchmark.sh`, `validate-model.sh`,
   `restore-or-shutdown.sh`, `rollback.sh` added -- both `docker compose
   config` renders validate cleanly.
-- New orchestration scripts: `canary-radlight.sh`, `promote-radlight.sh`,
-  `rollback-radlight.sh` (two-level rollback chain).
+- Orchestration scripts: `canary-radlight.sh`, `promote-radlight.sh`,
+  `rollback-radlight.sh` (two-level rollback chain), all exercised live.
 
-Not yet done: the actual sequential canary run (requires stopping
-production for the duration -- single-GPU VRAM exclusivity, same
-constraint as the original llama.cpp migration), every correctness/
-tool-call/DFlash2-equivalence/long-context gate, benchmark comparison, and
-promotion. See `docs/runbook.md`'s "Radlight canary" section for the
-procedure and `WORKLOG.md` for the detailed narrative.
+Not yet done: DFlash2 formal equivalence gate, chat-template A/B,
+long-context tests, full benchmark matrix, OpenCode/PI/Hermes agentic
+validation, and promotion. See `docs/runbook.md`'s "Radlight canary"
+section for the procedure and `WORKLOG.md` for the detailed narrative.
 
 ## Radiance-baseline: LIVE IN PRODUCTION (2026-09-14 entry, unchanged)
 

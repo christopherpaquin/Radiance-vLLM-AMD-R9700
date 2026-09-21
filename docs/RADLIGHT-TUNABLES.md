@@ -209,6 +209,76 @@ per the task's own instruction, not Radlight's script text.) This profile
 never combines the explicit KV-bytes flag with `--gpu-memory-utilization`
 -- picking exactly one avoids the ambiguity the task explicitly calls out.
 
+## First live canary results (2026-09-21)
+
+Ran the sequential canary (`scripts/canary-radlight.sh qwen38-27b-radlight`)
+three times against real production hardware. The first two attempts hit
+real bugs (fixed, see WORKLOG.md for the full account): a git "dubious
+ownership" crash-loop against the read-only repo mount, and a shell-quoting
+bug that corrupted `--speculative-config`'s JSON value. A third attempt's
+first boot also hit a `HSA_STATUS_ERROR_MEMORY_FAULT` during engine
+initialization -- consistent with Radlight's own README ("First run will
+crash... run it again... if your GPU is doing nothing the default should
+eventually fit"), not traced to a specific fix; the automatic container
+restart (`restart: unless-stopped`) succeeded on the very next attempt with
+identical configuration.
+
+The canary then passed `scripts/validate-model.sh`'s full guardrail suite
+cleanly:
+
+| Check | Result |
+|---|---|
+| VRAM postflight | 30.14GiB / 31.86GiB used -- **1.72GiB headroom** (above the 0.5GiB floor and the task's ~0.75-1.0GiB target) |
+| Known-answer arithmetic | Correct (47*89=4183) |
+| Known-answer code-completion | Passed static AST check |
+| Tool-call determinism | Consistent across 4 trials including a full container restart |
+| `scripts/test-tool-calling.sh` (6 scenarios) | **6/6 passed** |
+
+Kernel/optimization evidence collected live (not assumed):
+
+- `Resolved architecture: Qwen3_5ForConditionalGeneration` (target) and
+  `DFlash2DraftModel` (drafter) -- both resolved without error.
+- `[radiance.gdn] gdn_chunk_scan ENABLED` -- R4D engaged for the
+  Gated-DeltaNet layers.
+- `[radiance.mxfp4] linear layers: 304/304 on our kernel, 0 FORCED ONTO
+  AITER` -- full MXFP4 kernel engagement, no fallback.
+- `Selected TritonFp8BlockScaledMMKernel for Fp8LinearMethod` -- real FP8
+  kernel path for both the target and drafter models.
+- `GPU KV cache size: 281,186 tokens` / `Maximum concurrency for 262,144
+  tokens per request: 1.07x` -- matches the exact-parity profile's tight,
+  by-design VRAM budget.
+- `/metrics`: `vllm:spec_decode_num_draft_tokens_total` 1827,
+  `vllm:spec_decode_num_accepted_tokens_total` 838 (**~46% acceptance
+  rate**), with the expected per-draft-position falloff (227 accepted at
+  position 0 down to 49 at position 6) -- DFlash2 is genuinely proposing
+  and accepting tokens, not just "on."
+- One transparently-logged (non-silent) fallback observed:
+  `[radiance.gdn] falling back to FLA for this shape: state dtype
+  torch.float16` -- a specific GDN shape variant uses the reference FLA
+  kernel rather than R4D's fused path; logged clearly, not hidden.
+- A non-fatal optional-module gap, also transparently logged:
+  `[radiance.gemm] no gemm_nt kernel for M<=64 bf16 and no paroquant
+  fallback (ModuleNotFoundError('radiance_paroquant_kernel')), disabled`.
+
+Informal throughput signal (`scripts/benchmark.sh`, concurrency 1, ~512
+prompt tokens, 128 max tokens, single measurement -- not the full matrix):
+**61.23 tok/s aggregate**, vs. the Radiance-baseline's established ~23-24
+tok/s single-stream figure (`docs/TUNING.md`) -- roughly **2.5x**, well
+above the task's 25% promotion threshold. This is one data point, not the
+required full apples-to-apples matrix (same prompt/sampling/output-length
+methodology across concurrency 1/2, cold/warm TTFT, prefix-cache hit rate,
+etc.) -- treat as a strong positive signal, not a promotion-qualifying
+result on its own.
+
+**Not yet run** (see STATUS.md/WORKLOG.md for the full list): the formal
+DFlash2 output-equivalence gate (with vs. without, deterministic sampling,
+`qwen38-27b-radlight-nospec`), chat-template A/B, long-context tests (8K
+through 262K), the full benchmark matrix, and real OpenCode/PI/Hermes
+agentic-task validation. The canary was intentionally rolled back to the
+Radiance-baseline production profile after this first pass (level-1
+rollback, `scripts/rollback-radlight.sh`) rather than promoted, since
+promotion requires all of the above, not just the guardrail suite.
+
 Also verified present and correctly spelled on this exact image:
 `--language-model-only`, `--attention-backend`, `--mamba-cache-mode
 {align,all,none}`, `--mamba-cache-dtype`, `--mamba-ssm-cache-dtype`,

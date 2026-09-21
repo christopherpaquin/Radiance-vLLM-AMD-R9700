@@ -107,11 +107,86 @@ Append-only. Matches sibling repos' convention on this host.
 - Ran `shellcheck` against every new/modified script (one SC2155 warning
   fixed in `stop.sh`; everything else clean) and `docker compose config`
   against both compose files (both render without error).
-- **Not yet done as of this entry**: the model/base-image downloads were
-  still in progress; the actual sequential canary
-  (`scripts/canary-radlight.sh`), every correctness/tool-call/DFlash2-
-  equivalence/long-context validation gate, benchmark comparison, and
-  promotion have not run yet. Production is untouched. See `STATUS.md`.
+- Downloads completed: base image `docker.io/rocm/vllm@sha256:b8a082f...`
+  (89.5GB), target model (19.82GB, verified), drafter (2.12GB, verified).
+  Verified against the actual pulled image's `vllm serve --help=all`
+  (with `/dev/kfd`/`/dev/dri` attached, since the arg parser probes for a
+  device at construction time): this exact vLLM 0.27.1.dev5 build only
+  accepts `--kv-cache-memory-bytes`, not Radlight's own `--kv-cache-memory`
+  spelling -- fixed in `compose.radlight.yaml` per the task's own
+  instruction to trust the pinned image's actual help output over
+  Radlight's script text.
+- **Ran the sequential canary live (`scripts/canary-radlight.sh
+  qwen38-27b-radlight`), three attempts:**
+  1. Crash-looped: `git -C /opt/repo rev-parse ...` (used by the
+     entrypoint to key the compiled-kernel cache) hit git's "dubious
+     ownership" safety check against the read-only host-owned bind mount.
+     Fixed via `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0` env vars in
+     `compose.radlight.yaml` -- no need to touch Radlight's own script or
+     the read-only mount.
+  2. `vllm serve` rejected `--speculative-config`: the profile's JSON
+     value was wrapped in literal single quotes, which unquoted shell
+     expansion inside the container's `sh -c` does NOT strip (quote
+     removal only applies to real shell-syntax quotes present before
+     substitution, not characters that arrive via an expanded variable).
+     Fixed by dropping the now-unneeded quoting in all four
+     `SPEC_DECODE_ARGS`-setting profiles (the JSON has no whitespace, so
+     it never needed shell quoting).
+  3. First boot of the third attempt hit `HSA_STATUS_ERROR_MEMORY_FAULT`
+     during engine-core init -- not traced to a specific cause, and
+     consistent with Radlight's own README ("First run will crash with an
+     out-of-memory error, run it again"). The container's own
+     `restart: unless-stopped` policy retried automatically with identical
+     config and **the very next attempt succeeded completely.**
+  - Along the way, also found and fixed: `load_env()` (common.sh)
+    unconditionally re-sourcing `.env` clobbered an already-exported
+    `API_PORT` (the canary deliberately exports 8081 without persisting
+    it, since production's real port must stay 8080) -- this caused
+    `validate-model.sh` to poll the wrong port and report a false
+    failure; `validate-model.sh` had the same clobbering bug independently
+    (its own raw `source .env`) AND its early-exit connectivity checks
+    never called `restore-or-shutdown.sh` (only the bottom FAILURES-array
+    path did), so that false failure never triggered an automatic
+    restore -- production was briefly left down and was manually restored
+    before continuing. Both fixed; `canary-radlight.sh`'s rollback-manifest
+    capture also had a `.RepoDigests`-on-container-instead-of-image bug
+    (same fixed in `status.sh`), and `rollback-radlight.sh` wasn't
+    updating the current-profile/current-stack state files after a
+    successful level-1 rollback (it used `DEPLOY_IS_RESTORE=1`, which is
+    correct for automatic-failure-recovery but wrong for a deliberate,
+    successful operator-invoked step-back) -- fixed by calling
+    `save_current_profile` explicitly in that path.
+  - **With all of the above fixed, the canary passed
+    `scripts/validate-model.sh`'s full guardrail suite cleanly**: VRAM
+    postflight (30.14/31.86GiB used, 1.72GiB headroom), known-answer
+    arithmetic (47*89=4183, correct) and code-completion (static AST
+    check passed), tool-call determinism across 4 trials including a full
+    container restart. All 6 `scripts/test-tool-calling.sh` scenarios
+    also passed.
+  - Kernel/optimization evidence collected live: `Resolved architecture:
+    Qwen3_5ForConditionalGeneration` (target) and `DFlash2DraftModel`
+    (drafter); `gdn_chunk_scan ENABLED`; `[radiance.mxfp4] linear layers:
+    304/304 on our kernel, 0 FORCED ONTO AITER`; `Selected
+    TritonFp8BlockScaledMMKernel` for both models; `GPU KV cache size:
+    281,186 tokens` / `1.07x` max concurrency at 262144 ctx (tight,
+    by-design). `/metrics` confirmed DFlash2 genuinely proposing/accepting
+    tokens: 1827 drafted, 838 accepted (~46%), with the expected
+    per-position acceptance falloff. One informal `scripts/benchmark.sh`
+    point: 61.23 tok/s aggregate (concurrency 1, ~512 prompt tokens, 128
+    max tokens) vs. the baseline's established ~23-24 tok/s -- ~2.5x, one
+    data point, not the full required matrix.
+  - **Deliberately rolled back to the Radiance-baseline production
+    profile** (`scripts/rollback-radlight.sh qwen38-27b`) after this first
+    pass rather than promoting -- the guardrail suite passing is not the
+    full promotion gate (DFlash2 formal equivalence, chat-template A/B,
+    long-context matrix, full benchmark matrix, and real OpenCode/PI/
+    Hermes validation have not run). Verified production fully restored:
+    `:8080/v1/models` responding with `scar-coder`, a live chat completion
+    succeeded, dashboard (`:8088`) reachable, raptor.lab reachable over
+    SSH.
+- **Status at this entry**: Radlight canary validated once, not promoted.
+  Production untouched net of the canary window itself. Full detail:
+  `docs/RADLIGHT-TUNABLES.md` "First live canary results", `STATUS.md`.
 
 ## 2026-09-14
 

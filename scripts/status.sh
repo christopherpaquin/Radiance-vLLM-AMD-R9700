@@ -40,7 +40,9 @@ if [[ -n "$PROFILE" ]]; then
   compose ps "$CONTAINER" 2>&1 | sed 's/^/  /'
   health="$(compose ps --format '{{.Health}}' "$CONTAINER" 2>/dev/null || true)"
   echo "  Health: ${health:-unknown}"
-  image_digest="$(docker inspect "$CONTAINER" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo unknown)"
+  image_ref="$(docker inspect "$CONTAINER" --format '{{.Image}}' 2>/dev/null || true)"
+  image_digest="unknown"
+  [[ -n "$image_ref" ]] && image_digest="$(docker inspect "$image_ref" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo unknown)"
   echo "  Image:  ${image_digest}"
 else
   echo "  (skipped -- no profile on record)"

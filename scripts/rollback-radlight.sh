@@ -55,6 +55,16 @@ else
 fi
 
 if DEPLOY_IS_RESTORE=1 "${SCRIPT_DIR}/deploy.sh" "$PROFILE"; then
+  # Unlike the automatic-failure-recovery use of DEPLOY_IS_RESTORE=1
+  # (restore-or-shutdown.sh / cutover.sh's rollback, where NOT touching
+  # the state file is correct -- the failed candidate should never be
+  # recorded as current-good, and the prior value is already right), this
+  # is a deliberate, successful, operator-invoked step-back FROM an
+  # already-recorded-as-good radlight. The state files must reflect that
+  # production is genuinely back on radiance-baseline now, or status.sh
+  # and the next canary attempt would trust a stale "radlight is current"
+  # pointer.
+  save_current_profile "$PROFILE"
   log_pass "Level-1 rollback complete: scar.lab:8080/v1 is served by radiance-vllm (profile: ${PROFILE}) again."
 else
   log_fail "Level-1 rollback ALSO failed to come up. Falling through to the final fallback: scripts/rollback.sh (llama.cpp)."
