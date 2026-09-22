@@ -18,7 +18,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 PROVIDER_ID="scar-radiance-vllm"
-PROVIDER_LABEL="scar.lab Radiance vLLM"
 
 ENDPOINT="http://scar.lab:8081/v1"
 PROFILE=""
@@ -79,6 +78,15 @@ SERVED_MODEL_NAME="$(get_profile_var SERVED_MODEL_NAME)"
 MAX_MODEL_LEN="$(get_profile_var MAX_MODEL_LEN)"
 [[ -n "$SERVED_MODEL_NAME" ]] || { log_fail "Profile ${PROFILE} has no SERVED_MODEL_NAME"; exit 1; }
 [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] || { log_fail "Profile ${PROFILE} has a non-numeric MAX_MODEL_LEN"; exit 1; }
+
+# Label reflects whichever stack this profile actually deploys to, so it
+# doesn't go stale the next time the sequential canary promotes a different
+# stack (radiance-baseline <-> radlight; see stack_for_profile in common.sh).
+case "$(stack_for_profile "$PROFILE")" in
+  radlight) STACK_LABEL="Radlight" ;;
+  *) STACK_LABEL="Radiance" ;;
+esac
+PROVIDER_LABEL="scar.lab ${STACK_LABEL} vLLM"
 
 OUTPUT_LIMIT=$(( MAX_MODEL_LEN / 4 ))
 

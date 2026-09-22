@@ -19,7 +19,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 PROVIDER_ID="scar-vllm"
-PROVIDER_LABEL="scar.lab Radiance vLLM"
 PLACEHOLDER_API_KEY="local-no-auth-required" # pragma: allowlist secret -- not a secret, no auth on this server (plan §17/§25)
 
 ENDPOINT_MODE="local"
@@ -99,6 +98,15 @@ MAX_MODEL_LEN="$(get_profile_var MAX_MODEL_LEN)"
 [[ -n "$SERVED_MODEL_NAME" ]] || { log_fail "Profile ${PROFILE} has no SERVED_MODEL_NAME"; exit 1; }
 [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] || { log_fail "Profile ${PROFILE} has a non-numeric MAX_MODEL_LEN"; exit 1; }
 
+# Label reflects whichever stack this profile actually deploys to, so it
+# doesn't go stale the next time the sequential canary promotes a different
+# stack (radiance-baseline <-> radlight; see stack_for_profile in common.sh).
+case "$(stack_for_profile "$PROFILE")" in
+  radlight) STACK_LABEL="Radlight" ;;
+  *) STACK_LABEL="Radiance" ;;
+esac
+PROVIDER_LABEL="scar.lab ${STACK_LABEL} vLLM"
+
 case "$ENDPOINT_MODE" in
   local) BASE_URL="http://localhost:${API_PORT:-8081}/v1" ;;
   lan|remote) BASE_URL="http://$(hostname):${API_PORT:-8081}/v1" ;;
@@ -113,7 +121,7 @@ NEW_PROVIDER="$(jq -n \
   --arg baseURL "$BASE_URL" \
   --arg apiKey "$PLACEHOLDER_API_KEY" \
   --arg modelId "$SERVED_MODEL_NAME" \
-  --arg modelName "${SERVED_MODEL_NAME} via Radiance vLLM/scar.lab (max ${MAX_MODEL_LEN} ctx)" \
+  --arg modelName "${SERVED_MODEL_NAME} via ${STACK_LABEL} vLLM/scar.lab (max ${MAX_MODEL_LEN} ctx)" \
   --argjson context "$MAX_MODEL_LEN" \
   --argjson output "$OUTPUT_LIMIT" \
   '{
